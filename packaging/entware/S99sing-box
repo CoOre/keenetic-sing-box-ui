@@ -1,0 +1,132 @@
+#!/bin/sh
+# Self-contained init script for sing-box, managed by keenetic-sing-box-ui.
+# Deliberately does NOT source Entware's /opt/etc/init.d/rc.func, because that
+# file is not present on every Keenetic/Entware install. Implements
+# start/stop/restart/status/check directly with a pidfile.
+#
+# Coreutils applets (sleep, rm, mkdir, kill) may not exist as standalone
+# binaries on PATH on minimal Entware installs; they are provided by busybox.
+# We therefore route them through busybox when available, and use shell
+# builtins (read, test) where possible.
+
+PATH=/opt/sbin:/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+if [ -x /opt/bin/busybox ]; then
+	BB=/opt/bin/busybox
+elif command -v busybox >/dev/null 2>&1; then
+	BB=busybox
+else
+	BB=""
+fi
+
+# bb runs an applet via busybox when available, otherwise the bare command.
+bb() {
+	if [ -n "$BB" ]; then
+		"$BB" "$@"
+	else
+		"$@"
+	fi
+}
+
+BIN=/opt/bin/sing-box
+CONF=/opt/etc/sing-box/config.json
+WORKDIR=/opt/var/lib/sing-box
+LOG=/opt/var/log/sing-box.log
+PIDFILE=/opt/var/run/sing-box.pid
+TUN_IF=tun0
+
+bb mkdir -p "$WORKDIR" /opt/var/run /opt/var/log 2>/dev/null
+
+# fw_up / fw_down add/remove FORWARD ACCEPT rules so LAN clients' traffic can
+# be forwarded through the sing-box tun and the replies can return. Keenetic's
+# default FORWARD policy drops traffic for the (unmanaged) tun interface, and
+# sing-box can't install nftables rules on this kernel. Best-effort: skipped if
+# iptables is unavailable, never fails the service.
+fw_up() {
+	command -v iptables >/dev/null 2>&1 || return 0
+	fw_down
+	iptables -I FORWARD -i "$TUN_IF" -j ACCEPT 2>/dev/null
+	iptables -I FORWARD -o "$TUN_IF" -j ACCEPT 2>/dev/null
+	echo "firewall: FORWARD accept for $TUN_IF"
+}
+
+fw_down() {
+	command -v iptables >/dev/null 2>&1 || return 0
+	while iptables -D FORWARD -i "$TUN_IF" -j ACCEPT 2>/dev/null; do :; done
+	while iptables -D FORWARD -o "$TUN_IF" -j ACCEPT 2>/dev/null; do :; done
+}
+
+read_pid() {
+	_pid=""
+	[ -f "$PIDFILE" ] && read -r _pid < "$PIDFILE" 2>/dev/null
+}
+
+is_running() {
+	read_pid
+	[ -n "$_pid" ] || return 1
+	# kill -0 probes liveness without /proc (more portable than [ -d /proc/PID ]).
+	bb kill -0 "$_pid" 2>/dev/null
+}
+
+start() {
+	if is_running; then
+		echo "sing-box already running (pid $_pid)"
+		return 0
+	fi
+	if [ ! -x "$BIN" ]; then
+		echo "sing-box binary not found at $BIN" >&2
+		return 1
+	fi
+	"$BIN" run -c "$CONF" -D "$WORKDIR" >>"$LOG" 2>&1 &
+	_started=$!
+	echo "$_started" > "$PIDFILE"
+	# Give it a moment so an immediate config failure is reported as such.
+	bb sleep 1
+	if is_running; then
+		fw_up
+		echo "sing-box started (pid $_started)"
+		return 0
+	fi
+	echo "sing-box failed to start; check $LOG" >&2
+	bb rm -f "$PIDFILE"
+	return 1
+}
+
+stop() {
+	if ! is_running; then
+		bb rm -f "$PIDFILE"
+		echo "sing-box not running"
+		return 0
+	fi
+	bb kill "$_pid" 2>/dev/null
+	_i=0
+	while is_running && [ "$_i" -lt 5 ]; do
+		bb sleep 1
+		_i=$((_i + 1))
+	done
+	if is_running; then
+		bb kill -9 "$_pid" 2>/dev/null
+	fi
+	bb rm -f "$PIDFILE"
+	fw_down
+	echo "sing-box stopped"
+}
+
+case "$1" in
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; start ;;
+	check)   "$BIN" check -c "$CONF" ;;
+	status)
+		if is_running; then
+			echo "sing-box is alive (pid $_pid)"
+		else
+			echo "sing-box is dead"
+		fi
+		;;
+	*)
+		echo "usage: $0 {start|stop|restart|check|status}" >&2
+		exit 1
+		;;
+esac

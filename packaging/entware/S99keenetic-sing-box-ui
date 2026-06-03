@@ -1,0 +1,10 @@
+#!/bin/sh
+
+ENABLED=yes
+PROCS=keenetic-sing-box-ui
+ARGS="--listen 0.0.0.0:9091"
+PREARGS=""
+DESC="Keenetic sing-box UI"
+PATH=/opt/sbin:/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+. /opt/etc/init.d/rc.func

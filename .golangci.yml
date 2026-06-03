@@ -1,0 +1,27 @@
+version: "2"
+
+# Default linters (errcheck, govet, ineffassign, staticcheck, unused) plus a
+# few sensible exclusions so idiomatic cleanup code and tests don't add noise.
+linters:
+  settings:
+    errcheck:
+      # Best-effort cleanup / I/O in defers where a returned error is not
+      # actionable. Listing them here is cleaner than peppering `_ =` around.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*compress/gzip.Reader).Close
+        - (*compress/gzip.Writer).Close
+        - os.Remove
+        - os.RemoveAll
+  exclusions:
+    rules:
+      # QF1008 ("could remove embedded field from selector") is a stylistic
+      # quick-fix; keeping the explicit embedded field reads clearer here.
+      - linters:
+          - staticcheck
+        text: QF1008
+      # Tests routinely ignore errors from setup helpers.
+      - path: _test\.go
+        linters:
+          - errcheck

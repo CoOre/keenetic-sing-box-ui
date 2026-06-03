@@ -1,0 +1,21 @@
+# Build output
+/dist/
+/keenetic-sing-box-ui
+/keenetic-sing-box-ui-linux-arm64
+*.tar.gz
+
+# Local secrets / deploy config (use .env.example as a template)
+.env
+
+# Editors / OS
+/.idea/
+/.vscode/
+.DS_Store
+
+# Go test artifacts
+*.test
+*.out
+
+# Node
+node_modules/
+web/node_modules/
