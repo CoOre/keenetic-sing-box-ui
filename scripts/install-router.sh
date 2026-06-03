@@ -39,7 +39,12 @@ set -euo pipefail
 #   ROUTER_OPKG_UUID      default auto   (auto-detect the disk that already
 #                                         has /bin/busybox + /etc/opkg.conf)
 #   ROUTER_LISTEN         default 0.0.0.0:9091
-#   ROUTER_BUILD          default 1
+#   ROUTER_RELEASE        empty (build from source). Set to "latest" or a tag
+#                         (e.g. v0.1.0) to install a prebuilt binary from the
+#                         GitHub release instead of compiling — no Go/Node
+#                         needed. Equivalent CLI: --from-release / --release-tag.
+#   KSB_REPO              GitHub owner/repo for releases (default CoOre/keenetic-sing-box-ui)
+#   ROUTER_BUILD          default 1 (ignored when ROUTER_RELEASE is set)
 #   ROUTER_REBOOT         default 0      (1 = reboot to validate auto-start;
 #                                         0 = just toggle chroot to start now)
 #   ROUTER_VERIFY_TIMEOUT default 60
@@ -72,13 +77,20 @@ ROUTER_LISTEN="${ROUTER_LISTEN:-0.0.0.0:9091}"
 ROUTER_BUILD="${ROUTER_BUILD:-1}"
 ROUTER_REBOOT="${ROUTER_REBOOT:-0}"
 ROUTER_VERIFY_TIMEOUT="${ROUTER_VERIFY_TIMEOUT:-60}"
+ROUTER_RELEASE="${ROUTER_RELEASE:-}"          # empty=build; "latest" or a tag=install prebuilt
+KSB_REPO="${KSB_REPO:-CoOre/keenetic-sing-box-ui}"
 
 BIN_NAME="keenetic-sing-box-ui"
 
 usage() {
 	cat <<EOF
 Usage: $0 [--host HOST] [--user USER] [--port PORT] [--opkg-uuid UUID]
-          [--listen LISTEN] [--no-build] [--reboot] [-h|--help]
+          [--listen LISTEN] [--from-release] [--release-tag TAG]
+          [--no-build] [--reboot] [-h|--help]
+
+  --from-release      install the prebuilt aarch64 binary from the latest
+                      GitHub release (no Go/Node toolchain required)
+  --release-tag TAG   same, but pin a specific release tag (e.g. v0.1.0)
 
 See the script header for full configuration documentation.
 EOF
@@ -91,6 +103,8 @@ while [ "$#" -gt 0 ]; do
 		--port)        ROUTER_PORT="${2:?missing}";       shift ;;
 		--opkg-uuid)   ROUTER_OPKG_UUID="${2:?missing}";  shift ;;
 		--listen)      ROUTER_LISTEN="${2:?missing}";     shift ;;
+		--from-release) ROUTER_RELEASE="latest" ;;
+		--release-tag) ROUTER_RELEASE="${2:?missing}";    shift ;;
 		--no-build)    ROUTER_BUILD=0 ;;
 		--reboot)      ROUTER_REBOOT=1 ;;
 		-h|--help)     usage; exit 0 ;;
@@ -100,7 +114,12 @@ while [ "$#" -gt 0 ]; do
 done
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing tool: $1" >&2; exit 1; }; }
-require_cmd ssh; require_cmd sshpass; require_cmd sftp; require_cmd make
+require_cmd ssh; require_cmd sshpass; require_cmd sftp
+if [ -n "${ROUTER_RELEASE}" ]; then
+	require_cmd curl; require_cmd tar       # install-from-release needs no Go/Node
+elif [ "${ROUTER_BUILD}" = "1" ]; then
+	require_cmd make
+fi
 
 # detect_gateway prints the machine's default-gateway IP (the LAN router on a
 # typical home network). Cross-platform: macOS (route), Linux (ip route / route).
@@ -185,15 +204,51 @@ sftp_get_file() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Build the binary
+# 1. Obtain the aarch64 binary: from a GitHub release, by building, or reuse
+#    a previously built one in dist/.
 # ---------------------------------------------------------------------------
 
-if [ "${ROUTER_BUILD}" = "1" ]; then
+# download_release <tag|latest>: fetch + verify the prebuilt tarball from the
+# GitHub release and extract the binary. Sets the global SRC_BIN. No toolchain.
+download_release() {
+	local tag="$1" tarball base expected actual
+	mkdir -p dist
+	if [ "${tag}" = "latest" ]; then
+		echo "==> Resolve latest release of ${KSB_REPO}"
+		tag="$(curl -fsSL "https://api.github.com/repos/${KSB_REPO}/releases/latest" \
+			| awk -F'"' '/"tag_name":/{print $4; exit}')"
+		[ -n "${tag}" ] || { echo "could not resolve latest release tag for ${KSB_REPO}" >&2; exit 1; }
+	fi
+	tarball="${BIN_NAME}_${tag}_aarch64.tar.gz"
+	base="https://github.com/${KSB_REPO}/releases/download/${tag}"
+	echo "==> Download ${tarball} (${tag})"
+	curl -fsSL -o "dist/${tarball}" "${base}/${tarball}" \
+		|| { echo "download failed: ${base}/${tarball}" >&2; exit 1; }
+	# Verify sha256 against the release's sha256sums.txt when both are available.
+	if command -v shasum >/dev/null 2>&1 \
+		&& curl -fsSL -o "dist/sha256sums.txt" "${base}/sha256sums.txt" 2>/dev/null; then
+		expected="$(awk -v f="${tarball}" '$2=="*"f || $2==f {print $1; exit}' dist/sha256sums.txt)"
+		if [ -n "${expected}" ]; then
+			actual="$(shasum -a 256 "dist/${tarball}" | awk '{print $1}')"
+			[ "${expected}" = "${actual}" ] \
+				|| { echo "sha256 mismatch for ${tarball}" >&2; exit 1; }
+			echo "    sha256 ok"
+		fi
+	fi
+	tar -xzf "dist/${tarball}" -C dist
+	SRC_BIN="dist/opt/bin/${BIN_NAME}"
+}
+
+if [ -n "${ROUTER_RELEASE}" ]; then
+	download_release "${ROUTER_RELEASE}"
+elif [ "${ROUTER_BUILD}" = "1" ]; then
 	echo "==> make build-arm64"
 	make build-arm64
+	SRC_BIN="dist/${BIN_NAME}-linux-arm64"
+else
+	SRC_BIN="dist/${BIN_NAME}-linux-arm64"
 fi
-SRC_BIN="dist/${BIN_NAME}-linux-arm64"
-[ -f "${SRC_BIN}" ] || { echo "binary not found at ${SRC_BIN} (run make build-arm64)" >&2; exit 1; }
+[ -f "${SRC_BIN}" ] || { echo "binary not found at ${SRC_BIN}" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
 # 2. Probe router: arch + locate the Entware-bearing disk

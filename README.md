@@ -69,6 +69,20 @@ make install-router
 заливает бинарник по SFTP, прописывает автозапуск через `/opt/etc/initrc` и
 стартует сервис. После завершения интерфейс доступен на `http://<роутер>:9091/`.
 
+#### Без компиляции — из готового релиза
+
+Если не хочется ставить Go/Node, можно залить **готовый бинарник из
+[GitHub Releases](https://github.com/CoOre/keenetic-sing-box-ui/releases)** —
+скрипт скачает его, проверит `sha256` и зальёт на роутер. Нужен только
+`curl`, `tar` и SSH-утилиты (без тулчейна):
+
+```bash
+scripts/install-router.sh --from-release            # последний релиз
+scripts/install-router.sh --release-tag v0.1.0      # конкретный тег
+# то же через переменную окружения:
+ROUTER_RELEASE=latest scripts/install-router.sh
+```
+
 Чтобы не вводить параметры каждый раз, можно зафиксировать их в `.env`
 (`scripts/install-router.sh` подхватывает его автоматически):
 
@@ -89,8 +103,9 @@ scripts/install-router.sh --host 192.168.1.1 --reboot
 → автоопределение шлюза (хост) / интерактивный запрос (логин и пароль).
 Скрипт кроссплатформенный — работает на macOS и Linux.
 
-Полный список параметров — в шапке `scripts/install-router.sh`. Хост-зависимости
-скрипта: `bash`, `sshpass`, `ssh`, `sftp`, `make`, `go`, `curl`.
+Полный список параметров — в шапке `scripts/install-router.sh`. Хост-зависимости:
+`bash`, `sshpass`, `ssh`, `sftp`, `curl` всегда; `tar` для `--from-release`;
+`make` + `go` только при сборке из исходников.
 
 ### Предусловие: Entware (OPKG) на роутере
 
