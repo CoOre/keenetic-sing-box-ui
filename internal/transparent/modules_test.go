@@ -12,10 +12,13 @@ import (
 // a busybox applet. insmodFile must fall back to `busybox insmod` when the
 // bare insmod call fails, otherwise TPROXY module loading silently aborts.
 func TestInsmodFile_FallsBackToBusybox(t *testing.T) {
+	// Key responses by the RESOLVED tool path: on Linux CI toolPath("insmod")
+	// finds /sbin/insmod, so a bare "insmod" key would never match and the
+	// fallback would never be exercised.
 	f := &cmdrun.Fake{
 		Responses: map[string]cmdrun.FakeResponse{
-			"insmod":  {Err: errors.New("not found")},
-			"busybox": {}, // success
+			toolPath("insmod"):  {Err: errors.New("not found")},
+			toolPath("busybox"): {}, // success
 		},
 	}
 	if err := insmodFile(context.Background(), f, "/lib/system-modules/x/xt_TPROXY.ko"); err != nil {
