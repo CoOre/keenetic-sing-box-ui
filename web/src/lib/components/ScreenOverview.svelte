@@ -93,7 +93,7 @@
   const installed = $derived(install?.installed ?? false);
   const svcPresent = $derived(info?.service?.present ?? false);
   const svcEnabled = $derived(info?.service?.enabled ?? false);
-  const running = $derived(installed && svcPresent && svcEnabled);
+  const running = $derived(installed && svcPresent && (info?.service?.running ?? false));
 
   const [d, du] = $derived(fmtBytes(trafficDown));
   const [u, uu] = $derived(fmtBytes(trafficUp));
@@ -192,7 +192,7 @@
               <span class={"dot " + (running ? "live" : "warn")}></span>
               {running ? "running" : "stopped"}
             </span>
-            <span class="hint-text">{running ? "autostart включён" : "процесс не запущен"}</span>
+            <span class="hint-text">{svcEnabled ? "autostart включён" : "autostart выключен"}</span>
           </div>
           <div class="row-wrap" style="margin-top:4px">
             {#if !running}

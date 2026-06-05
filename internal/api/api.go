@@ -525,7 +525,10 @@ func (h *handlers) settingsGet(w http.ResponseWriter, r *http.Request) {
 
 func (h *handlers) settingsSave(w http.ResponseWriter, r *http.Request) {
 	var in settings.Settings
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil {
+	// RouteCIDR/RouteDomains can legitimately hold a few hundred to a few
+	// thousand manually-curated entries (a 240-CIDR list alone is ~4 KiB), so
+	// the old 4 KiB cap rejected real saves with "request body too large".
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}

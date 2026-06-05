@@ -41,6 +41,7 @@ func TestDetect_FullyInstalled(t *testing.T) {
 	d.Runner = &cmdrun.Fake{
 		Responses: map[string]cmdrun.FakeResponse{
 			p.SingBoxBin: {Stdout: "sing-box version 1.10.7\nEnvironment: linux/arm64\n"},
+			"sh":         {Stdout: "sing-box is alive (pid 1234)\n"},
 		},
 	}
 
@@ -56,6 +57,33 @@ func TestDetect_FullyInstalled(t *testing.T) {
 	}
 	if !info.Service.Present || !info.Service.Enabled {
 		t.Errorf("expected service present+enabled, got %+v", info.Service)
+	}
+	if !info.Service.Running {
+		t.Errorf("expected service running, got %+v", info.Service)
+	}
+}
+
+func TestDetect_ServiceNotRunningWhenDead(t *testing.T) {
+	root := t.TempDir()
+	p := PathsRooted(root)
+	mustWrite(t, p.SingBoxInit, "#!/bin/sh\n", 0o755)
+
+	d := NewDetector(p)
+	d.Runner = &cmdrun.Fake{
+		Responses: map[string]cmdrun.FakeResponse{
+			"sh": {Stdout: "sing-box is dead\n"},
+		},
+	}
+
+	info, err := d.Detect(context.Background())
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if !info.Service.Present || !info.Service.Enabled {
+		t.Errorf("expected service present+enabled, got %+v", info.Service)
+	}
+	if info.Service.Running {
+		t.Errorf("expected service not running (dead), got %+v", info.Service)
 	}
 }
 

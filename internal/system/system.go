@@ -33,7 +33,10 @@ type SingBox struct {
 type Service struct {
 	InitPath string `json:"init_path"`
 	Present  bool   `json:"present"`
-	Enabled  bool   `json:"enabled"`
+	// Enabled reports autostart (the init script's executable bit), NOT whether
+	// the process is alive. Running reports the actual process liveness.
+	Enabled bool `json:"enabled"`
+	Running bool `json:"running"`
 }
 
 type Detector struct {
@@ -69,10 +72,26 @@ func (d *Detector) Detect(ctx context.Context) (Info, error) {
 	if st, err := d.FS.Stat(d.Paths.SingBoxInit); err == nil && !st.IsDir() {
 		svc.Present = true
 		svc.Enabled = st.Mode()&0o111 != 0
+		svc.Running = d.serviceRunning(ctx)
 	}
 	info.Service = svc
 
 	return info, nil
+}
+
+// serviceRunning probes actual process liveness by running the init script's
+// "status" action, which prints "<name> is alive" / "is dead" / "not running".
+// Best-effort: any error (script missing, exit code) means "not running".
+func (d *Detector) serviceRunning(ctx context.Context) bool {
+	res, err := d.Runner.Run(ctx, "sh", d.Paths.SingBoxInit, "status")
+	if err != nil {
+		return false
+	}
+	out := strings.ToLower(string(res.Stdout) + string(res.Stderr))
+	if strings.Contains(out, "not running") {
+		return false
+	}
+	return strings.Contains(out, "alive") || strings.Contains(out, "running")
 }
 
 var versionRe = regexp.MustCompile(`(?m)version\s+([0-9][^\s]*)`)

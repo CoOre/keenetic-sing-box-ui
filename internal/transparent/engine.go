@@ -89,6 +89,14 @@ func (e *Engine) Up(ctx context.Context, cfg Config) error {
 			return fmt.Errorf("route: %w", err)
 		}
 	}
+	// Strip the other mode's table artifacts so the two paths never coexist
+	// (e.g. a stale nat REDIRECT lingering after a switch to tproxy, which would
+	// double-handle TCP alongside the mangle TPROXY).
+	for _, t := range []string{"mangle", "nat", "filter"} {
+		if !cfg.usesTable(t) {
+			e.cleanTable(ctx, t)
+		}
+	}
 	if err := e.writeHook(cfg); err != nil {
 		return fmt.Errorf("hook: %w", err)
 	}

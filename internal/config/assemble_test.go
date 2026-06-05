@@ -88,11 +88,16 @@ func TestAssemble_TProxyMode(t *testing.T) {
 	if inb["type"] != "tproxy" || inb["listen_port"].(float64) != 7894 {
 		t.Errorf("tproxy inbound: %+v", inb)
 	}
-	// tproxy captures real traffic → needs the bypass/quic rules.
+	// tproxy captures real traffic → needs the private-range bypass. But it
+	// proxies UDP, so it must NOT reject QUIC (that's redirect-only).
 	hasPrivate := false
 	for _, r := range cfg["route"].(map[string]any)["rules"].([]any) {
-		if r.(map[string]any)["ip_is_private"] != nil {
+		m := r.(map[string]any)
+		if m["ip_is_private"] != nil {
 			hasPrivate = true
+		}
+		if m["protocol"] == "quic" {
+			t.Error("tproxy mode must NOT reject QUIC (UDP is proxied)")
 		}
 	}
 	if !hasPrivate {
@@ -172,9 +177,18 @@ func TestAssemble_RedirectInbound(t *testing.T) {
 			t.Errorf("redirect mode must carry no domain/ip_cidr rules, got: %+v", m)
 		}
 	}
-	// Still sniffs + hijacks DNS + rejects QUIC (defence in depth).
+	// Still sniffs + hijacks DNS + rejects QUIC (TCP-only → force TCP fallback).
 	if !hasAction(route, "hijack-dns") || !hasAction(route, "sniff") {
 		t.Errorf("redirect mode should keep sniff + hijack-dns rules")
+	}
+	hasQUICReject := false
+	for _, r := range route["rules"].([]any) {
+		if r.(map[string]any)["protocol"] == "quic" {
+			hasQUICReject = true
+		}
+	}
+	if !hasQUICReject {
+		t.Error("redirect mode should reject QUIC (UDP can't be proxied via REDIRECT)")
 	}
 }
 

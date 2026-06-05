@@ -16,7 +16,7 @@ export interface SystemInfo {
   paths: Paths;
   entware?: { opkg_path: string };
   sing_box?: { path: string; version?: string };
-  service: { init_path: string; present: boolean; enabled: boolean };
+  service: { init_path: string; present: boolean; enabled: boolean; running: boolean };
 }
 
 export interface InstallStatus {

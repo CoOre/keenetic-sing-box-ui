@@ -182,8 +182,8 @@
       <span>Режим перехвата</span>
       <select bind:value={settings.inbound_mode}>
         <option value="socks">SOCKS — ручной прокси на клиентах</option>
-        <option value="redirect">REDIRECT — прозрачный, только TCP (рекомендуется)</option>
-        <option value="tproxy">TProxy — прозрачный, TCP+UDP</option>
+        <option value="redirect">REDIRECT — прозрачный, только TCP (без модулей ядра)</option>
+        <option value="tproxy">TProxy — прозрачный, TCP+UDP (рекомендуется, нужны модули Netfilter)</option>
         <option value="tun">TUN — весь трафик</option>
       </select>
     </label>

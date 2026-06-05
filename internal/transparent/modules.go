@@ -50,27 +50,44 @@ func loadModule(ctx context.Context, r cmdrun.Runner, module string) error {
 		return nil
 	}
 	rel := kernelRelease()
-	osPath := filepath.Join(modulesOSDir, rel, module)
 	entPath := filepath.Join(modulesEntwareDir, module)
 
+	// Prefer a firmware copy (and mirror it into the Entware tree for persistence
+	// across firmware module-tree changes); fall back to an existing Entware copy.
 	target := ""
-	switch {
-	case fileExists(osPath):
-		target = osPath
-		if !fileExists(entPath) {
-			_ = os.MkdirAll(modulesEntwareDir, 0o755)
-			_ = copyFile(osPath, entPath)
+	for _, dir := range modulesOSDirs {
+		osPath := filepath.Join(dir, rel, module)
+		if fileExists(osPath) {
+			target = osPath
+			if !fileExists(entPath) {
+				_ = os.MkdirAll(modulesEntwareDir, 0o755)
+				_ = copyFile(osPath, entPath)
+			}
+			break
 		}
-	case fileExists(entPath):
+	}
+	if target == "" && fileExists(entPath) {
 		target = entPath
 	}
 	if target == "" {
-		return fmt.Errorf("module %s not found under %s/%s or %s", module, modulesOSDir, rel, modulesEntwareDir)
+		return fmt.Errorf("module %s not found under %v (rel %s) or %s", module, modulesOSDirs, rel, modulesEntwareDir)
 	}
-	if !ok(ctx, r, "insmod", target) {
-		return fmt.Errorf("insmod %s failed", target)
+	return insmodFile(ctx, r, target)
+}
+
+// insmodFile loads a .ko, preferring a standalone insmod but falling back to
+// the busybox applet. On several Keenetic firmwares (e.g. KN, kernel
+// 4.9-ndm-5) insmod exists ONLY as `busybox insmod` — there is no
+// /sbin/insmod and nothing named "insmod" on PATH — so the bare-name attempt
+// always fails and the busybox path is the one that actually loads the module.
+func insmodFile(ctx context.Context, r cmdrun.Runner, target string) error {
+	if ok(ctx, r, "insmod", target) {
+		return nil
 	}
-	return nil
+	if ok(ctx, r, "busybox", "insmod", target) {
+		return nil
+	}
+	return fmt.Errorf("insmod %s failed (tried insmod and busybox insmod)", target)
 }
 
 // LoadModules ensures every required netfilter module is loaded. It is lenient

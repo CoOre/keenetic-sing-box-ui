@@ -266,8 +266,9 @@ func routeFinalFor(mode string) string {
 // routeRulesFor returns route rules tuned per inbound mode.
 //
 //   - All modes: sniff (to recover TLS SNI / HTTP host) + DNS hijack.
-//   - Transparent capture (tun/tproxy/redirect): bypass private ranges and
-//     reject QUIC (so browsers fall back to sniffable TCP/TLS).
+//   - Transparent capture (tun/tproxy/redirect): bypass private ranges. QUIC is
+//     rejected ONLY in redirect mode (TCP-only) to force a sniffable TCP/TLS
+//     fallback; tproxy/tun capture UDP, so QUIC is proxied normally.
 //   - tproxy is SELECTIVE in sing-box: with final=direct, explicit rules send
 //     the chosen domains/CIDRs to the proxy; everything else stays direct.
 //   - redirect is SELECTIVE at the iptables layer (the route ipset), so no
@@ -293,10 +294,13 @@ func routeRulesFor(opts AssembleOptions) []map[string]any {
 				"action":  "reject",
 			})
 		}
-		rules = append(rules,
-			map[string]any{"ip_is_private": true, "outbound": OutboundDirectTag},
-			map[string]any{"protocol": "quic", "action": "reject"},
-		)
+		rules = append(rules, map[string]any{"ip_is_private": true, "outbound": OutboundDirectTag})
+		// QUIC reject only for redirect (TCP-only): UDP/443 can't be proxied
+		// there, so reject it to push browsers onto the redirected TCP path.
+		// tproxy (and tun) capture UDP, so QUIC is proxied — no reject.
+		if mode == InboundRedirect {
+			rules = append(rules, map[string]any{"protocol": "quic", "action": "reject"})
+		}
 	}
 	// Selective inclusion inside sing-box — tproxy only. redirect selects at the
 	// iptables layer (route ipset), so it carries no domain/ip_cidr rules here.

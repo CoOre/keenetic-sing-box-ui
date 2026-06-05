@@ -36,8 +36,8 @@ const (
 	HookFileName = Name + "_firewall.sh"
 
 	// Kernel modules live in the firmware tree; we copy the ones we need into
-	// the Entware tree and insmod them. /lib/modules/<uname -r>/<mod>.
-	modulesOSDir      = "/lib/modules"
+	// the Entware tree and insmod them: <osDir>/<uname -r>/<mod>. The firmware
+	// dir varies by Keenetic model/firmware — see modulesOSDirs.
 	modulesEntwareDir = "/opt/lib/modules"
 
 	// Keenetic's local config RPC. Used read-only to resolve a policy's fwmark.
@@ -62,6 +62,15 @@ const (
 	netRouteSet   = Name + "_route_net" // optional dst-intercept set
 )
 
+// modulesOSDirs are the firmware module trees we search, in order, for a
+// <dir>/<uname -r>/<mod>.ko file. Most Keenetic firmwares use /lib/modules,
+// but on some (e.g. KN with kernel 4.9-ndm-5) the "Netfilter kernel modules"
+// component installs xt_TPROXY/xt_socket under /lib/system-modules instead —
+// without this second path, TPROXY mode aborts in LoadModules even though the
+// modules are present. Verified live: insmod from /lib/system-modules loads
+// xt_TPROXY/xt_socket and registers the TPROXY target + socket match.
+var modulesOSDirs = []string{"/lib/modules", "/lib/system-modules"}
+
 // Modules we try to load. xt_owner is special-cased (often built in).
 var requiredModules = []string{
 	"xt_TPROXY.ko",
@@ -80,4 +89,7 @@ var toolPaths = map[string][]string{
 	"ipset":     {"/opt/sbin/ipset", "/usr/sbin/ipset", "/sbin/ipset", "/opt/bin/ipset"},
 	"ip":        {"/opt/sbin/ip", "/usr/sbin/ip", "/sbin/ip", "/opt/bin/ip"},
 	"insmod":    {"/sbin/insmod", "/usr/sbin/insmod", "/opt/sbin/insmod"},
+	// On many Keenetic firmwares insmod is only a busybox applet (no standalone
+	// /sbin/insmod), so loadModule falls back to `busybox insmod`.
+	"busybox": {"/opt/bin/busybox", "/bin/busybox", "/usr/bin/busybox", "/usr/sbin/busybox"},
 }

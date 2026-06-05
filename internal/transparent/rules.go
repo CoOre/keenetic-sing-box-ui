@@ -134,22 +134,35 @@ func (e *Engine) applyRedirectFilter(ctx context.Context, cfg Config) error {
 	return nil
 }
 
+// cleanTable removes our jumps and chains from a single iptables table. Safe to
+// call when nothing is installed (all steps ignore "not found"). Used both by
+// Clean (full teardown) and by Up (to strip the inactive mode's table, e.g. the
+// stale nat REDIRECT when switching from redirect to tproxy — otherwise both the
+// nat REDIRECT and the mangle TPROXY would try to handle the same TCP packet).
+func (e *Engine) cleanTable(ctx context.Context, table string) {
+	const ipt = "iptables"
+	switch table {
+	case "mangle", "nat":
+		for _, proto := range []string{"tcp", "udp"} {
+			e.deleteJump(ctx, ipt, table, "PREROUTING", chainPrerouting, proto)
+		}
+		for _, c := range []string{chainPrerouting, chainDivert, chainTproxy, chainRedirect, chainMarkOut, chainOutput} {
+			e.dropChain(ctx, ipt, table, c)
+		}
+	case "filter":
+		e.deleteJump(ctx, ipt, "filter", "FORWARD", chainForward, "udp")
+		e.dropChain(ctx, ipt, "filter", chainForward)
+	}
+}
+
 // Clean removes everything we install: jumps, chains, the routing rule/table,
 // the exclude ipset, and the netfilter.d hook. Safe to call when nothing is
 // installed (all steps ignore "not found" errors). It never touches rules that
 // aren't ours.
 func (e *Engine) Clean(ctx context.Context) error {
-	const ipt = "iptables"
-	for _, proto := range []string{"tcp", "udp"} {
-		e.deleteJump(ctx, ipt, "mangle", "PREROUTING", chainPrerouting, proto)
-		e.deleteJump(ctx, ipt, "nat", "PREROUTING", chainPrerouting, proto)
+	for _, t := range []string{"mangle", "nat", "filter"} {
+		e.cleanTable(ctx, t)
 	}
-	e.deleteJump(ctx, ipt, "filter", "FORWARD", chainForward, "udp")
-	for _, c := range []string{chainPrerouting, chainDivert, chainTproxy, chainRedirect, chainMarkOut, chainOutput} {
-		e.dropChain(ctx, ipt, "mangle", c)
-		e.dropChain(ctx, ipt, "nat", c)
-	}
-	e.dropChain(ctx, ipt, "filter", chainForward)
 	e.flushRoute(ctx)
 	e.destroyExcludeSet(ctx)
 	e.destroyRouteSet(ctx)
