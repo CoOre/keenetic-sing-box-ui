@@ -32,6 +32,13 @@ type Config struct {
 	// for the initial population so the set isn't empty before the first resolve.
 	RouteCIDR []string
 
+	// RejectCIDR seeds the reject ipset: destinations to blackhole on FORWARD
+	// (TCP reset / UDP ICMP unreachable) in both modes. Used to kill throttled
+	// CDN endpoints (e.g. an ISP Google Global Cache that stalls) so clients fail
+	// over instantly to a healthy node we proxy. Static; not touched by the
+	// resolver.
+	RejectCIDR []string
+
 	// Resolved at apply time (not persisted):
 	policyMark string // "0x..." resolved from PolicyName via RCI, or ""
 }
@@ -77,13 +84,15 @@ func (e *Engine) Up(ctx context.Context, cfg Config) error {
 	if err := e.rebuildExcludeSet(ctx, cfg); err != nil {
 		return fmt.Errorf("exclude set: %w", err)
 	}
-	if cfg.Mode == ModeRedirect {
-		// Selective REDIRECT matches dst against the route ipset. Seed it with the
-		// static CIDRs additively (no flush) so capture works before the resolver's
-		// first pass and so reviving sing-box never wipes resolver-added domain IPs.
-		e.ensureRouteSet(ctx)
-		e.seedRouteSet(ctx, cfg.RouteCIDR)
+	if err := e.rebuildRejectSet(ctx, cfg); err != nil {
+		return fmt.Errorf("reject set: %w", err)
 	}
+	// Both transparent modes select dst against the route ipset (selective
+	// REDIRECT / selective TPROXY). Seed it with the static CIDRs additively (no
+	// flush) so capture works before the resolver's first pass and so reviving
+	// sing-box never wipes resolver-added domain IPs.
+	e.ensureRouteSet(ctx)
+	e.seedRouteSet(ctx, cfg.RouteCIDR)
 	if cfg.Mode == ModeTProxy {
 		if err := e.ensureRoute(ctx); err != nil {
 			return fmt.Errorf("route: %w", err)
@@ -133,9 +142,8 @@ func (e *Engine) Apply(ctx context.Context, cfg Config, table string) error {
 		cfg.policyMark = PolicyMark(ctx, cfg.PolicyName)
 	}
 	e.ensureExcludeSet(ctx, cfg)
-	if cfg.Mode == ModeRedirect {
-		e.ensureRouteSet(ctx) // contents preserved; resolver/Up populate it
-	}
+	e.ensureRejectSet(ctx, cfg) // both modes blackhole on it; static, user-curated
+	e.ensureRouteSet(ctx)       // both modes select on it; contents preserved (resolver/Up populate it)
 	if cfg.Mode == ModeTProxy {
 		_ = e.ensureRoute(ctx)
 	}
@@ -148,25 +156,27 @@ func (e *Engine) Apply(ctx context.Context, cfg Config, table string) error {
 		e.log().Warn("transparent: proxy not listening, skipping capture", "port", cfg.inboundPort())
 		const ipt = "iptables"
 		for _, proto := range []string{"tcp", "udp"} {
-			e.deleteJump(ctx, ipt, "mangle", "PREROUTING", chainPrerouting, proto)
-			e.deleteJump(ctx, ipt, "nat", "PREROUTING", chainPrerouting, proto)
+			e.deleteJump(ctx, ipt, "mangle", "PREROUTING", chainPrerouting, proto, true)
+			e.deleteJump(ctx, ipt, "nat", "PREROUTING", chainPrerouting, proto, true)
 		}
-		// Also drop the filter FORWARD QUIC-block jump, so UDP/443 flows freely
-		// while the proxy is down (no TCP path to fall back to anyway).
-		e.deleteJump(ctx, ipt, "filter", "FORWARD", chainForward, "udp")
+		// Also drop the filter FORWARD jumps (reject blackhole + QUIC block), so
+		// traffic flows freely while the proxy is down (no TCP path to fall back
+		// to anyway).
+		e.deleteJump(ctx, ipt, "filter", "FORWARD", chainForward, "tcp", false)
+		e.deleteJump(ctx, ipt, "filter", "FORWARD", chainForward, "udp", false)
 		return nil
 	}
 
+	// The filter table is shared by both modes (reject-set blackhole + redirect's
+	// QUIC block); the mode-specific path handles the other table.
+	if table == "filter" {
+		return e.applyFilter(ctx, cfg)
+	}
 	switch cfg.Mode {
 	case ModeTProxy:
 		return e.applyTProxy(ctx, cfg)
 	case ModeRedirect:
-		switch table {
-		case "filter":
-			return e.applyRedirectFilter(ctx, cfg)
-		default:
-			return e.applyRedirect(ctx, cfg)
-		}
+		return e.applyRedirect(ctx, cfg)
 	}
 	return nil
 }
@@ -175,10 +185,11 @@ func (e *Engine) Apply(ctx context.Context, cfg Config, table string) error {
 func (c Config) tables() []string {
 	switch c.Mode {
 	case ModeTProxy:
-		return []string{"mangle"}
+		// mangle: the selective TPROXY. filter: the reject-set blackhole.
+		return []string{"mangle", "filter"}
 	case ModeRedirect:
-		// nat: the selective REDIRECT. filter: the UDP/443 (QUIC) block that
-		// forces browsers onto the redirected TCP path.
+		// nat: the selective REDIRECT. filter: reject-set blackhole + the UDP/443
+		// (QUIC) block that forces browsers onto the redirected TCP path.
 		return []string{"nat", "filter"}
 	}
 	return nil

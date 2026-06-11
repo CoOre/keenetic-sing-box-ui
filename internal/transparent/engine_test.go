@@ -39,8 +39,8 @@ func TestApplyTProxyRules(t *testing.T) {
 		"-t mangle -A " + chainPrerouting + " -p tcp -m socket --transparent -g " + chainDivert,
 		"-m conntrack --ctdir REPLY -j ACCEPT",
 		"-m set --match-set " + excludeSetV4() + " dst -j ACCEPT",
-		"-p tcp -j TPROXY --on-ip 127.0.0.1 --on-port 2080 --tproxy-mark " + MarkHex,
-		"-p udp -j TPROXY --on-ip 127.0.0.1 --on-port 2080 --tproxy-mark " + MarkHex,
+		"-p tcp -m set --match-set " + routeSetV4() + " dst -j TPROXY --on-ip 127.0.0.1 --on-port 2080 --tproxy-mark " + MarkHex,
+		"-p udp -m set --match-set " + routeSetV4() + " dst -j TPROXY --on-ip 127.0.0.1 --on-port 2080 --tproxy-mark " + MarkHex,
 		"-A PREROUTING -p tcp -m conntrack ! --ctstate INVALID -g " + chainPrerouting,
 	}
 	for _, w := range want {
@@ -89,23 +89,73 @@ func TestApplyRedirectSelective(t *testing.T) {
 	}
 }
 
-func TestApplyRedirectFilterBlocksQUIC(t *testing.T) {
+func TestApplyFilterBlocksQUICInRedirect(t *testing.T) {
 	f := &cmdrun.Fake{Default: cmdrun.FakeResponse{Err: errStub}}
 	e := &Engine{Runner: f}
 	cfg := Config{Mode: ModeRedirect, RedirectPort: 2081}
 
-	if err := e.applyRedirectFilter(context.Background(), cfg); err != nil {
-		t.Fatalf("applyRedirectFilter: %v", err)
+	if err := e.applyFilter(context.Background(), cfg); err != nil {
+		t.Fatalf("applyFilter: %v", err)
 	}
-	// UDP/443 to route-set members is rejected so browsers fall back to TCP.
+	// REDIRECT is TCP-only, so UDP/443 to route-set members is rejected to force
+	// browsers onto the redirected TCP path.
 	want := "-t filter -A " + chainForward + " -p udp --dport 443 -m set --match-set " + routeSetV4() + " dst -j REJECT --reject-with icmp-port-unreachable"
 	if !hasCall(f.Calls, want) {
 		t.Errorf("QUIC block rule not emitted; want %q", want)
 	}
-	// Jump is inserted at the top of FORWARD (not appended), so upstream ACCEPTs
-	// can't shadow it.
-	if !hasCall(f.Calls, "-I FORWARD 1 -p udp -m conntrack ! --ctstate INVALID -g "+chainForward) {
-		t.Errorf("FORWARD top-insert jump not emitted")
+	// Jumps are inserted at the top of FORWARD (not appended), so upstream ACCEPTs
+	// can't shadow them — both tcp and udp. They MUST use -j (jump), NOT -g
+	// (goto): FORWARD's policy is DROP, so a goto fall-through would drop every
+	// unmatched packet (the whole internet bar the proxied set).
+	for _, proto := range []string{"tcp", "udp"} {
+		if !hasCall(f.Calls, "-I FORWARD 1 -p "+proto+" -m conntrack ! --ctstate INVALID -j "+chainForward) {
+			t.Errorf("FORWARD top-insert %s jump not emitted with -j", proto)
+		}
+		if hasCall(f.Calls, "-I FORWARD 1 -p "+proto+" -m conntrack ! --ctstate INVALID -g "+chainForward) {
+			t.Errorf("FORWARD %s jump must use -j, not -g (goto → DROP policy)", proto)
+		}
+	}
+}
+
+func TestApplyFilterRejectSet(t *testing.T) {
+	f := &cmdrun.Fake{Default: cmdrun.FakeResponse{Err: errStub}}
+	e := &Engine{Runner: f}
+	// tproxy mode: the reject-set blackhole applies, but the redirect QUIC block
+	// (route-set UDP reject) must NOT, since TPROXY handles UDP itself.
+	cfg := Config{Mode: ModeTProxy, TProxyPort: 2080}
+
+	if err := e.applyFilter(context.Background(), cfg); err != nil {
+		t.Fatalf("applyFilter: %v", err)
+	}
+	wantTCP := "-t filter -A " + chainForward + " -p tcp --dport 443 -m set --match-set " + rejectSetV4() + " dst -j REJECT --reject-with tcp-reset"
+	if !hasCall(f.Calls, wantTCP) {
+		t.Errorf("reject-set TCP rule not emitted; want %q", wantTCP)
+	}
+	wantUDP := "-t filter -A " + chainForward + " -p udp --dport 443 -m set --match-set " + rejectSetV4() + " dst -j REJECT --reject-with icmp-port-unreachable"
+	if !hasCall(f.Calls, wantUDP) {
+		t.Errorf("reject-set UDP rule not emitted; want %q", wantUDP)
+	}
+	// The route-set QUIC block belongs to redirect mode only.
+	if hasCall(f.Calls, "--match-set "+routeSetV4()+" dst -j REJECT") {
+		t.Errorf("tproxy mode must not emit the route-set QUIC block")
+	}
+	// Reject must be evaluated BEFORE the exclude RETURN: a reject entry is often
+	// a narrow sub-block of a broad exclude, and exclude-first would mask it.
+	rejectIdx, excludeIdx := -1, -1
+	for i, c := range f.Calls {
+		line := callLine(c)
+		if rejectIdx == -1 && strings.Contains(line, "--match-set "+rejectSetV4()+" dst -j REJECT") {
+			rejectIdx = i
+		}
+		if excludeIdx == -1 && strings.Contains(line, "--match-set "+excludeSetV4()+" dst -j RETURN") {
+			excludeIdx = i
+		}
+	}
+	if rejectIdx == -1 || excludeIdx == -1 {
+		t.Fatalf("missing reject (%d) or exclude (%d) rule", rejectIdx, excludeIdx)
+	}
+	if rejectIdx > excludeIdx {
+		t.Errorf("reject rule (idx %d) must come before exclude RETURN (idx %d)", rejectIdx, excludeIdx)
 	}
 }
 

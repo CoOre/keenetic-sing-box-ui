@@ -26,6 +26,24 @@ type Settings struct {
 	RouteDomains []string `json:"route_domains"` // domains to send through the proxy (via FakeIP)
 	RouteCIDR    []string `json:"route_cidr"`    // destination CIDRs to send through the proxy
 	UseConntrack bool     `json:"use_conntrack"` // connmark optimization (skip established conns)
+
+	// RejectCIDR holds destination CIDRs to REJECT outright on FORWARD (TCP gets
+	// a reset, UDP an ICMP unreachable), for both transparent modes. Its purpose
+	// is throttled/blackholed CDN endpoints — typically an ISP-embedded Google
+	// Global Cache that returns SYN-ACK but then stalls: rejecting them makes the
+	// client (e.g. a browser opening parallel googlevideo connections) instantly
+	// give up on the dead node and use a healthy one we route through the proxy,
+	// killing the multi-second stall. These are operator-specific, so they're a
+	// user-curated list, not a built-in constant.
+	RejectCIDR []string `json:"reject_cidr"`
+
+	// Multiplex enables sing-box stream multiplexing (h2mux) on the proxy
+	// outbounds. Chatty apps (Telegram opens dozens of short-lived TCP
+	// connections to its DCs) otherwise pay a full TLS handshake per connection
+	// through the proxy chain; muxing collapses them onto a few persistent
+	// tunnels. Requires the proxy SERVER to be sing-box (or otherwise accept
+	// sing-box multiplex) — incompatible with xray mux.cool.
+	Multiplex bool `json:"multiplex"`
 }
 
 // Defaults: socks/mixed on :2080 — the mode proven to coexist with a router's

@@ -13,6 +13,7 @@
     exclude_cidr: [],
     route_domains: [],
     route_cidr: [],
+    reject_cidr: [],
     use_conntrack: false,
   });
 
@@ -20,6 +21,7 @@
   let domainsText = $state("");
   let cidrText = $state("");
   let excludeText = $state("");
+  let rejectText = $state("");
 
   let busy = $state(false);
   let applyBusy = $state(false);
@@ -100,6 +102,7 @@
       domainsText = (s.route_domains ?? []).join("\n");
       cidrText = (s.route_cidr ?? []).join("\n");
       excludeText = (s.exclude_cidr ?? []).join("\n");
+      rejectText = (s.reject_cidr ?? []).join("\n");
     } catch { /* keep defaults */ }
     try { policies = await api.policies(); } catch { /* RCI unavailable */ }
   }
@@ -116,11 +119,13 @@
         route_domains: toLines(domainsText),
         route_cidr: toLines(cidrText),
         exclude_cidr: toLines(excludeText),
+        reject_cidr: toLines(rejectText),
       };
       settings = await api.settingsSave(s);
       domainsText = (settings.route_domains ?? []).join("\n");
       cidrText = (settings.route_cidr ?? []).join("\n");
       excludeText = (settings.exclude_cidr ?? []).join("\n");
+      rejectText = (settings.reject_cidr ?? []).join("\n");
       notice = "Сохранено. Нажмите «Применить и перезапустить» чтобы активировать.";
     } catch (e) {
       error = e instanceof ApiError ? e.message : String(e);
@@ -141,6 +146,7 @@
         route_domains: toLines(domainsText),
         route_cidr: toLines(cidrText),
         exclude_cidr: toLines(excludeText),
+        reject_cidr: toLines(rejectText),
       };
       settings = await api.settingsSave(s);
     } catch (e) {
@@ -256,6 +262,23 @@
             rows="3"
             bind:value={excludeText}
             placeholder={"192.0.2.0/24"}
+            spellcheck="false"
+          ></textarea>
+        </div>
+
+        <div class="section">
+          <div class="sec-head">
+            <span class="sec-title">Блокировать (reject)</span>
+            <span class="muted sec-hint">
+              CIDR, которым отдаётся отказ (TCP-reset / ICMP) на FORWARD. Для «придушенных» CDN —
+              например встроенного у провайдера Google Global Cache, который отвечает, но зависает:
+              отказ заставляет клиента мгновенно перейти на рабочий узел через прокси.
+            </span>
+          </div>
+          <textarea
+            rows="3"
+            bind:value={rejectText}
+            placeholder={"87.245.216.0/21"}
             spellcheck="false"
           ></textarea>
         </div>

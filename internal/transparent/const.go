@@ -53,13 +53,14 @@ const (
 	chainTproxy     = Name + "_tproxy" // connmark-optimized tproxy leaf
 	chainRedirect   = Name + "_redirect"
 	chainMarkOut    = Name + "_mark_out"
-	chainForward    = Name + "_fwd" // filter FORWARD leaf: UDP/443 (QUIC) block
+	chainForward    = Name + "_fwd" // filter FORWARD leaf: reject-set blackhole + redirect-mode QUIC block
 )
 
 // ipset names. v4/v6 suffix is appended at use sites.
 const (
 	netExcludeSet = Name + "_exclude_net"
-	netRouteSet   = Name + "_route_net" // optional dst-intercept set
+	netRouteSet   = Name + "_route_net"  // optional dst-intercept set
+	netRejectSet  = Name + "_reject_net" // dst-blackhole set (throttled CDNs)
 )
 
 // modulesOSDirs are the firmware module trees we search, in order, for a

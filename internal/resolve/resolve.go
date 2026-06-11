@@ -1,8 +1,9 @@
 // Package resolve keeps the transparent-proxy route ipset current by resolving
 // the user's proxied domains to their live IPs.
 //
-// Why this exists: in REDIRECT mode the proxy/direct decision is made at the
-// iptables layer against the route ipset (see internal/transparent). Routing a
+// Why this exists: in the selective transparent modes (REDIRECT and TPROXY) the
+// proxy/direct decision is made at the iptables layer against the route ipset
+// (see internal/transparent). Routing a
 // domain therefore means having its CURRENT IPs in that set. CDN-fronted sites
 // (chatgpt.com behind Cloudflare/OpenAI) rotate IPs constantly and don't get
 // reliably sniffed by SNI, so a static IP snapshot lags and the connection
@@ -99,7 +100,8 @@ func (r *Resolver) Start(ctx context.Context) {
 
 // Refresh resolves the proxied domains and rebuilds the route ipset. Safe to
 // call on demand (e.g. right after the firewall is (re)applied). No-op unless
-// the active inbound mode is redirect.
+// the active inbound mode selects at the iptables layer (redirect or tproxy);
+// both match dst against the route ipset this resolver maintains.
 func (r *Resolver) Refresh(ctx context.Context) {
 	if r.Engine == nil || r.Settings == nil {
 		return
@@ -115,7 +117,7 @@ func (r *Resolver) Refresh(ctx context.Context) {
 		r.log().Warn("resolve: load settings", "err", err)
 		return
 	}
-	if s.InboundMode != "redirect" {
+	if s.InboundMode != "redirect" && s.InboundMode != "tproxy" {
 		return
 	}
 	defer debug.FreeOSMemory()

@@ -138,6 +138,7 @@ func transparentConfig(s settings.Settings) transparent.Config {
 		ExtraExclude: s.ExcludeCIDR,
 		UseConntrack: s.UseConntrack,
 		RouteCIDR:    s.RouteCIDR, // static seed; resolver folds in resolved domain IPs
+		RejectCIDR:   s.RejectCIDR,
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 
 func excludeSetV4() string { return netExcludeSet + "4" }
 func routeSetV4() string   { return netRouteSet + "4" }
+func rejectSetV4() string  { return netRejectSet + "4" }
 
 // normalizeEntries trims/validates and dedups CIDRs to add to an ipset.
 func normalizeEntries(cidrs []string) []string {
@@ -153,6 +154,39 @@ func (e *Engine) ensureExcludeSet(ctx context.Context, cfg Config) {
 
 func (e *Engine) destroyExcludeSet(ctx context.Context) {
 	set := excludeSetV4()
+	_, _ = run(ctx, e.Runner, "ipset", "flush", set)
+	_, _ = run(ctx, e.Runner, "ipset", "destroy", set)
+}
+
+// rebuildRejectSet creates the reject set if needed and replaces its contents
+// with the user-curated CIDRs. Called from Up (full apply).
+func (e *Engine) rebuildRejectSet(ctx context.Context, cfg Config) error {
+	set := rejectSetV4()
+	if _, err := run(ctx, e.Runner, "ipset", "create", set, "hash:net", "family", "inet", "-exist"); err != nil {
+		return err
+	}
+	if _, err := run(ctx, e.Runner, "ipset", "flush", set); err != nil {
+		return err
+	}
+	for _, entry := range normalizeEntries(cfg.RejectCIDR) {
+		_, _ = run(ctx, e.Runner, "ipset", "add", set, entry, "-exist")
+	}
+	return nil
+}
+
+// ensureRejectSet guarantees the reject set exists and holds the current
+// entries, without flushing — safe from the netfilter.d hook mid-traffic. Adds
+// are -exist so they don't duplicate; stale entries are pruned only by Up.
+func (e *Engine) ensureRejectSet(ctx context.Context, cfg Config) {
+	set := rejectSetV4()
+	_, _ = run(ctx, e.Runner, "ipset", "create", set, "hash:net", "family", "inet", "-exist")
+	for _, entry := range normalizeEntries(cfg.RejectCIDR) {
+		_, _ = run(ctx, e.Runner, "ipset", "add", set, entry, "-exist")
+	}
+}
+
+func (e *Engine) destroyRejectSet(ctx context.Context) {
+	set := rejectSetV4()
 	_, _ = run(ctx, e.Runner, "ipset", "flush", set)
 	_, _ = run(ctx, e.Runner, "ipset", "destroy", set)
 }

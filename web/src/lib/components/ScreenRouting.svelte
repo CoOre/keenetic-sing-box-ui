@@ -12,6 +12,7 @@
     exclude_cidr: [],
     route_domains: [],
     route_cidr: [],
+    reject_cidr: [],
     use_conntrack: false,
   });
 
@@ -19,6 +20,7 @@
   let domainsText = $state("");
   let cidrText = $state("");
   let excludeText = $state("");
+  let rejectText = $state("");
   let sources = $state<ListSource[]>([]);
   let newUrl = $state("");
   let newType = $state("auto");
@@ -46,6 +48,7 @@
       domainsText = (s.route_domains ?? []).join("\n");
       cidrText = (s.route_cidr ?? []).join("\n");
       excludeText = (s.exclude_cidr ?? []).join("\n");
+      rejectText = (s.reject_cidr ?? []).join("\n");
       dirty = false;
     } catch { /* keep defaults */ }
     try { policies = await api.policies(); } catch { /* RCI unavailable */ }
@@ -65,11 +68,12 @@
   async function save() {
     busy = "save"; error = ""; notice = "";
     try {
-      const s: SingboxSettings = { ...settings, route_domains: toLines(domainsText), route_cidr: toLines(cidrText), exclude_cidr: toLines(excludeText) };
+      const s: SingboxSettings = { ...settings, route_domains: toLines(domainsText), route_cidr: toLines(cidrText), exclude_cidr: toLines(excludeText), reject_cidr: toLines(rejectText) };
       settings = await api.settingsSave(s);
       domainsText = (settings.route_domains ?? []).join("\n");
       cidrText = (settings.route_cidr ?? []).join("\n");
       excludeText = (settings.exclude_cidr ?? []).join("\n");
+      rejectText = (settings.reject_cidr ?? []).join("\n");
       dirty = false;
       notice = "Сохранено";
     } catch (e) {
@@ -80,7 +84,7 @@
   async function applyAndRestart() {
     busy = "apply"; error = ""; notice = ""; confirmApply = false;
     try {
-      const s: SingboxSettings = { ...settings, route_domains: toLines(domainsText), route_cidr: toLines(cidrText), exclude_cidr: toLines(excludeText) };
+      const s: SingboxSettings = { ...settings, route_domains: toLines(domainsText), route_cidr: toLines(cidrText), exclude_cidr: toLines(excludeText), reject_cidr: toLines(rejectText) };
       settings = await api.settingsSave(s);
       const res: ServersApplyResult = await api.serversApply(true);
       if (res.applied) {
@@ -227,6 +231,10 @@
             <div class="field">
               <label>Исключения → всегда напрямую <span class="hint mono">эти адреса обходят VPN даже если попадают под правила выше</span></label>
               <textarea class="textarea mono" rows={3} bind:value={excludeText} oninput={() => dirty = true}></textarea>
+            </div>
+            <div class="field">
+              <label>Блокировать (reject) <span class="hint mono">отдаётся отказ (TCP-reset/ICMP). Для придушенных CDN — напр. встроенного у провайдера Google-кэша: клиент сразу уходит на рабочий узел через прокси</span></label>
+              <textarea class="textarea mono" rows={3} bind:value={rejectText} oninput={() => dirty = true} placeholder="87.245.216.0/21"></textarea>
             </div>
             <div class="grid-2">
               <div class="field">

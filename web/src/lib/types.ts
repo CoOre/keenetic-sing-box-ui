@@ -110,6 +110,7 @@ export interface SingboxSettings {
   exclude_cidr?: string[];
   route_domains?: string[];
   route_cidr?: string[];
+  reject_cidr?: string[];
   use_conntrack?: boolean;
 }
 
