@@ -12,11 +12,14 @@
   let error = $state("");
 
   // Traffic via Clash API stream
-  let trafficDown = $state(0);
-  let trafficUp = $state(0);
   let trafficConnected = $state(false);
-  let downHistory = $state<number[]>(Array(28).fill(0));
-  let upHistory = $state<number[]>(Array(28).fill(0));
+  let downHistory = $state<number[]>(Array(48).fill(0));
+  let upHistory = $state<number[]>(Array(48).fill(0));
+  // EMA-сглаживание (байт/с): clash отдаёт мгновенную скорость раз в секунду,
+  // без сглаживания бёрстовый трафик рисует «расчёску» из нулей
+  let downAvg = $state(0);
+  let upAvg = $state(0);
+  const EMA_ALPHA = 0.35;
 
   async function load() {
     try {
@@ -53,10 +56,10 @@
             if (!line) continue;
             try {
               const t = JSON.parse(line);
-              trafficDown = t.down ?? 0;
-              trafficUp = t.up ?? 0;
-              downHistory = [...downHistory.slice(1), trafficDown / 1024 / 1024];
-              upHistory = [...upHistory.slice(1), trafficUp / 1024 / 1024];
+              downAvg += ((t.down ?? 0) - downAvg) * EMA_ALPHA;
+              upAvg += ((t.up ?? 0) - upAvg) * EMA_ALPHA;
+              downHistory = [...downHistory.slice(1), downAvg / 1024 / 1024];
+              upHistory = [...upHistory.slice(1), upAvg / 1024 / 1024];
             } catch { /* ignore */ }
           }
         }
@@ -84,19 +87,38 @@
     return [(n / 1024 / 1024).toFixed(2), "MB/s"];
   }
 
-  function sparkPath(data: number[], w: number, h: number): string {
-    const max = Math.max(...data, 0.01);
-    const pts = data.map((v, i) => `${(i / (data.length - 1)) * w},${h - (v / max) * (h - 4) - 2}`).join(" ");
-    return `0,${h} ${pts} ${w},${h}`;
+  // Гладкая кривая по точкам (Catmull-Rom → кубические Безье)
+  function smoothPath(data: number[], w: number, h: number, max: number): string {
+    const n = data.length;
+    const px = (i: number) => (i / (n - 1)) * w;
+    const py = (i: number) => h - (data[i] / max) * (h - 6) - 3;
+    const cy = (y: number) => Math.min(Math.max(y, 2), h - 1);
+    let d = `M ${px(0)},${py(0)}`;
+    for (let i = 0; i < n - 1; i++) {
+      const y0 = py(Math.max(i - 1, 0)), y1 = py(i), y2 = py(i + 1), y3 = py(Math.min(i + 2, n - 1));
+      const x1 = px(i), x2 = px(i + 1);
+      const dx = (x2 - x1) / 3;
+      d += ` C ${x1 + dx},${cy(y1 + (y2 - y0) / 6)} ${x2 - dx},${cy(y2 - (y3 - y1) / 6)} ${x2},${y2}`;
+    }
+    return d;
   }
+
+  const CHART_W = 100;
+  const CHART_H = 48;
+  // Общая шкала для обеих серий — один график
+  const chartMax = $derived(Math.max(...downHistory, ...upHistory, 0.01));
+  const downLine = $derived(smoothPath(downHistory, CHART_W, CHART_H, chartMax));
+  const upLine = $derived(smoothPath(upHistory, CHART_W, CHART_H, chartMax));
+  const downArea = $derived(`${downLine} L ${CHART_W},${CHART_H} L 0,${CHART_H} Z`);
+  const upArea = $derived(`${upLine} L ${CHART_W},${CHART_H} L 0,${CHART_H} Z`);
 
   const installed = $derived(install?.installed ?? false);
   const svcPresent = $derived(info?.service?.present ?? false);
   const svcEnabled = $derived(info?.service?.enabled ?? false);
   const running = $derived(installed && svcPresent && (info?.service?.running ?? false));
 
-  const [d, du] = $derived(fmtBytes(trafficDown));
-  const [u, uu] = $derived(fmtBytes(trafficUp));
+  const [d, du] = $derived(fmtBytes(downAvg));
+  const [u, uu] = $derived(fmtBytes(upAvg));
 </script>
 
 <div class="page stack">
@@ -244,42 +266,30 @@
           </div>
         </div>
         <div class="card-body">
-          <div class="traffic-grid">
-            <div class="metric">
-              <div class="metric-head"><Icon name="download" size={14} style="color:var(--ok)" />Загрузка</div>
-              <div class="metric-val">{d}<small>{du}</small></div>
-              <div class="metric-spark">
-                {#if trafficConnected}
-                  <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none">
-                    <defs><linearGradient id="gd" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stop-color="var(--ok)" stop-opacity="0.28"/>
-                      <stop offset="100%" stop-color="var(--ok)" stop-opacity="0"/>
-                    </linearGradient></defs>
-                    <polygon points={sparkPath(downHistory, 100, 38)} fill="url(#gd)"/>
-                    <polyline points={downHistory.map((v, i) => { const max = Math.max(...downHistory, 0.01); return `${(i/(downHistory.length-1))*100},${38-(v/max)*34-2}`; }).join(" ")} fill="none" stroke="var(--ok)" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
-                  </svg>
-                {:else}
-                  <span class="spark-base"></span>
-                {/if}
-              </div>
-            </div>
-            <div class="metric">
-              <div class="metric-head"><Icon name="upload" size={14} style="color:var(--accent)" />Отдача</div>
-              <div class="metric-val">{u}<small>{uu}</small></div>
-              <div class="metric-spark">
-                {#if trafficConnected}
-                  <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none">
-                    <defs><linearGradient id="gu" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.28"/>
-                      <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
-                    </linearGradient></defs>
-                    <polygon points={sparkPath(upHistory, 100, 38)} fill="url(#gu)"/>
-                    <polyline points={upHistory.map((v, i) => { const max = Math.max(...upHistory, 0.01); return `${(i/(upHistory.length-1))*100},${38-(v/max)*34-2}`; }).join(" ")} fill="none" stroke="var(--accent)" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
-                  </svg>
-                {:else}
-                  <span class="spark-base"></span>
-                {/if}
-              </div>
+          <div class="traffic-chart">
+            {#if trafficConnected}
+              <svg class="spark" viewBox="0 0 {CHART_W} {CHART_H}" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="gd" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="var(--ok)" stop-opacity="0.22"/>
+                    <stop offset="100%" stop-color="var(--ok)" stop-opacity="0"/>
+                  </linearGradient>
+                  <linearGradient id="gu" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.22"/>
+                    <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
+                  </linearGradient>
+                </defs>
+                <path d={downArea} fill="url(#gd)"/>
+                <path d={upArea} fill="url(#gu)"/>
+                <path d={downLine} fill="none" stroke="var(--ok)" stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+                <path d={upLine} fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+              </svg>
+            {:else}
+              <span class="spark-base"></span>
+            {/if}
+            <div class="chart-overlay">
+              <span class="chart-stat"><Icon name="download" size={13} style="color:var(--ok)" />{d}<small>{du}</small></span>
+              <span class="chart-stat"><Icon name="upload" size={13} style="color:var(--accent)" />{u}<small>{uu}</small></span>
             </div>
           </div>
           {#if !trafficConnected}

@@ -14,7 +14,14 @@
 
   type Route = "overview" | "routing" | "servers" | "diagnostics" | "advanced" | "security" | "setup";
 
-  let route = $state<Route>("overview");
+  const ROUTES: Route[] = ["overview", "routing", "servers", "diagnostics", "advanced", "security", "setup"];
+
+  function routeFromHash(): Route {
+    const h = location.hash.replace(/^#\/?/, "");
+    return (ROUTES as string[]).includes(h) ? (h as Route) : "overview";
+  }
+
+  let route = $state<Route>(routeFromHash());
   let sidebarOpen = $state(false);
   let refreshing = $state(false);
   let refreshKey = $state(0);
@@ -44,12 +51,25 @@
     refreshing = false;
   }
 
-  function go(r: Route) {
-    route = r;
+  function applyHash() {
+    route = routeFromHash();
     sidebarOpen = false;
     const sc = document.querySelector(".scroll");
     if (sc) sc.scrollTop = 0;
   }
+
+  function go(r: Route) {
+    if (routeFromHash() === r) {
+      applyHash();
+      return;
+    }
+    location.hash = "/" + r;
+  }
+
+  $effect(() => {
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
+  });
 
   const NAV_MANAGE = [
     { id: "overview" as Route, label: "Обзор", icon: "overview" },
