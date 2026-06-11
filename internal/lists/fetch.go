@@ -80,7 +80,16 @@ func extractFromObject(raw json.RawMessage) []string {
 	}
 	var out []string
 	// "dns" contains resolver addresses (8.8.8.8:53) — not route targets, skip.
-	for _, key := range []string{"domains", "ip4", "ip6", "cidr4", "cidr6", "ips", "subnets", "nets", "entries", "list"} {
+	// "cidr4"/"cidr6" are DELIBERATELY excluded: opencck fills them with the
+	// whole ASN/cloud blocks a site *might* sit behind (e.g. 3.0.0.0/9 = all of
+	// AWS us-east, plus GCP/Azure/Cloudflare /9–/16). Routing those sends huge
+	// swaths of the internet — including unrelated services that share the same
+	// CDN — through the proxy. We take only "ip4"/"ip6": the actual addresses the
+	// site's domains currently resolve to. Those are clean; combined with the
+	// domain_suffix rules built from "domains", they select the real service
+	// without collateral. (For a service with its own narrow ASN, e.g. Telegram,
+	// add its official CIDR list as a separate type=cidr source.)
+	for _, key := range []string{"domains", "ip4", "ip6", "ips", "subnets", "nets", "entries", "list"} {
 		v, ok := obj[key]
 		if !ok {
 			continue
@@ -105,10 +114,21 @@ func classify(entries []string, typ string) (domains, cidrs []string) {
 		case TypeDomains:
 			domains = append(domains, e)
 		case TypeCIDR:
+			// Explicit cidr source: the user vouches for it, keep subnets as-is
+			// (this is the escape hatch for a real narrow block, e.g. Telegram's
+			// official ranges).
 			cidrs = append(cidrs, e)
 		default: // auto
 			if looksLikeCIDR(e) {
-				cidrs = append(cidrs, e)
+				// Host routes only. A broader subnet from an auto source over-
+				// captures: a single /16 cloud block sweeps unrelated CDN
+				// neighbours through the proxy. Routing for shared-CDN services
+				// belongs to domain_suffix (matched by SNI); the precise hosts
+				// here are the supplement. To route a real subnet on purpose,
+				// add it as a type=cidr source.
+				if isHostCIDR(e) {
+					cidrs = append(cidrs, e)
+				}
 			} else {
 				domains = append(domains, e)
 			}
@@ -148,6 +168,21 @@ func looksLikeCIDR(s string) bool {
 		}
 	}
 	return strings.Count(host, ".") == 3
+}
+
+// isHostCIDR reports whether s is a single host: a bare IP, an IPv4 /32, or an
+// IPv6 /128. Broader prefixes are subnets. Version-aware so an IPv6 "/32" (a
+// huge block) is correctly treated as a subnet, not a host.
+func isHostCIDR(s string) bool {
+	i := strings.IndexByte(s, '/')
+	if i < 0 {
+		return true // bare IP = single host
+	}
+	suffix := s[i+1:]
+	if strings.Contains(s[:i], ":") { // IPv6
+		return suffix == "128"
+	}
+	return suffix == "32"
 }
 
 func cleanLines(in []string) []string {

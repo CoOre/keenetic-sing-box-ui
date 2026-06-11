@@ -3,7 +3,6 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 )
 
 // Inbound modes for an assembled router config.
@@ -39,10 +38,20 @@ type AssembleOptions struct {
 	// through the proxy.
 	RouteDomains []string
 	RouteCIDR    []string
+	// ExtraRouteDomains are domains from URL-based list sources. Matched via
+	// sing-box domain_suffix rules (succinct trie — cheap, ~comparable to the
+	// ip_cidr trie). Combined with RouteDomains at assembly time. This is the
+	// stable, precise mechanism for CDN-fronted services (Cloudflare/AWS), whose
+	// IPs rotate and are shared — so an ip_cidr snapshot can never be both clean
+	// and complete; the hostname is the only reliable selector.
+	ExtraRouteDomains []string
 	// ExtraRouteCIDR are CIDRs from URL-based list sources. Matched via sing-box
 	// ip_cidr rules (Patricia trie — negligible memory regardless of count).
 	// Combined with RouteCIDR at assembly time.
 	ExtraRouteCIDR []string
+
+	// Multiplex enables h2mux on the proxy server outbounds (see settings.Multiplex).
+	Multiplex bool
 }
 
 // ProxyOutbound is a single proxy server outbound (a sing-box outbound object,
@@ -103,6 +112,17 @@ func Assemble(opts AssembleOptions, servers []ProxyOutbound) ([]byte, error) {
 		if tag == "" {
 			continue
 		}
+		if opts.Multiplex {
+			// Collapse many short-lived proxy connections (e.g. Telegram's DC
+			// fan-out) onto a few persistent tunnels, removing the per-connection
+			// TLS handshake through the proxy chain. Server must accept sing-box mux.
+			obj["multiplex"] = map[string]any{
+				"enabled":         true,
+				"protocol":        "h2mux",
+				"max_connections": 4,
+				"padding":         false,
+			}
+		}
 		serverTags = append(serverTags, tag)
 		outbounds = append(outbounds, obj)
 	}
@@ -149,13 +169,7 @@ func Assemble(opts AssembleOptions, servers []ProxyOutbound) ([]byte, error) {
 			"output":    opts.LogPath,
 			"timestamp": true,
 		},
-		"dns": map[string]any{
-			"servers": []map[string]any{
-				{"type": "tls", "tag": "google", "server": "8.8.8.8"},
-				{"type": "local", "tag": "local"},
-			},
-			"strategy": "ipv4_only",
-		},
+		"dns":       dnsFor(opts),
 		"inbounds":  inboundsFor(opts, tun),
 		"outbounds": outbounds,
 		"route": map[string]any{
@@ -178,6 +192,20 @@ func Assemble(opts AssembleOptions, servers []ProxyOutbound) ([]byte, error) {
 		return nil, fmt.Errorf("marshal config: %w", err)
 	}
 	return body, nil
+}
+
+// dnsFor builds the dns block. Plain resolver for every mode (no FakeIP).
+func dnsFor(opts AssembleOptions) map[string]any {
+	// Plain resolver for every mode. Transparent modes (tproxy/redirect) select
+	// at the iptables layer against the route ipset and do NOT hijack client DNS,
+	// so clients keep using the router/ISP resolver directly (fast, geo-correct).
+	return map[string]any{
+		"servers": []map[string]any{
+			{"type": "tls", "tag": "google", "server": "8.8.8.8"},
+			{"type": "local", "tag": "local"},
+		},
+		"strategy": "ipv4_only",
+	}
 }
 
 // inboundsFor builds the inbound list for the selected mode.
@@ -249,18 +277,12 @@ func isTransparent(mode string) bool {
 	return mode == InboundTProxy || mode == InboundRedirect || mode == InboundTun
 }
 
-// routeFinalFor picks the catch-all outbound.
-//   - redirect: SELECTIVE happens at the iptables layer (the route ipset), so
-//     sing-box only ever receives traffic that should be proxied → final=proxy.
-//   - tproxy: still selects inside sing-box (domain_suffix + ip_cidr) → direct.
-//   - socks/tun (full tunnel): proxy.
+// routeFinalFor picks the catch-all outbound. Every mode now sends final=proxy:
+//   - redirect/tproxy: SELECTIVE happens at the iptables layer (the route ipset),
+//     so sing-box only ever receives traffic that should be proxied.
+//   - socks/tun (full tunnel): everything is proxied by definition.
 func routeFinalFor(mode string) string {
-	switch mode {
-	case InboundTProxy:
-		return OutboundDirectTag
-	default: // redirect, socks, tun
-		return OutboundProxyTag
-	}
+	return OutboundProxyTag
 }
 
 // routeRulesFor returns route rules tuned per inbound mode.
@@ -269,10 +291,10 @@ func routeFinalFor(mode string) string {
 //   - Transparent capture (tun/tproxy/redirect): bypass private ranges. QUIC is
 //     rejected ONLY in redirect mode (TCP-only) to force a sniffable TCP/TLS
 //     fallback; tproxy/tun capture UDP, so QUIC is proxied normally.
-//   - tproxy is SELECTIVE in sing-box: with final=direct, explicit rules send
-//     the chosen domains/CIDRs to the proxy; everything else stays direct.
-//   - redirect is SELECTIVE at the iptables layer (the route ipset), so no
-//     domain/ip_cidr rules here — sing-box proxies what it receives (final=proxy).
+//   - tproxy AND redirect are SELECTIVE at the iptables layer (the route ipset,
+//     kept current by the DNS resolver), so neither carries domain/ip_cidr rules
+//     here — sing-box proxies what it receives (final=proxy). This keeps direct
+//     traffic out of sing-box userspace entirely (no relay/DNS-hijack overhead).
 func routeRulesFor(opts AssembleOptions) []map[string]any {
 	mode := opts.InboundMode
 	rules := []map[string]any{
@@ -302,46 +324,5 @@ func routeRulesFor(opts AssembleOptions) []map[string]any {
 			rules = append(rules, map[string]any{"protocol": "quic", "action": "reject"})
 		}
 	}
-	// Selective inclusion inside sing-box — tproxy only. redirect selects at the
-	// iptables layer (route ipset), so it carries no domain/ip_cidr rules here.
-	if mode == InboundTProxy {
-		// Domains: matched in sing-box via TLS/HTTP SNI sniffing.
-		// Only manually-entered domains; URL-list domains go via iptables/ipset.
-		allDomains := cleanList(opts.RouteDomains)
-		if len(allDomains) > 0 {
-			rules = append(rules, map[string]any{
-				"domain_suffix": allDomains,
-				"outbound":      OutboundProxyTag,
-			})
-		}
-		// CIDRs: manual entries + URL list entries merged together.
-		// sing-box uses a Patricia/radix trie for ip_cidr matching — memory
-		// cost is negligible (≈2 MB for 1000 entries) regardless of list size.
-		allCIDRs := cleanList(append(opts.RouteCIDR, opts.ExtraRouteCIDR...))
-		if len(allCIDRs) > 0 {
-			rules = append(rules, map[string]any{
-				"ip_cidr":  allCIDRs,
-				"outbound": OutboundProxyTag,
-			})
-		}
-	}
 	return rules
-}
-
-// cleanList trims, drops empties/comments, and dedups a string list.
-func cleanList(in []string) []string {
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, v := range in {
-		v = strings.TrimSpace(v)
-		if v == "" || strings.HasPrefix(v, "#") {
-			continue
-		}
-		if _, ok := seen[v]; ok {
-			continue
-		}
-		seen[v] = struct{}{}
-		out = append(out, v)
-	}
-	return out
 }

@@ -107,10 +107,14 @@ func TestAssemble_TProxyMode(t *testing.T) {
 
 func TestAssemble_TProxySelective(t *testing.T) {
 	vless := map[string]any{"type": "vless", "server": "h", "server_port": 1, "uuid": "u"}
+	// RouteDomains/RouteCIDR are intentionally ignored by the sing-box config in
+	// tproxy mode — like redirect, selection happens at the iptables layer (the
+	// route ipset, kept current by the resolver). sing-box proxies whatever it
+	// receives, so final=proxy and there are no domain/ip_cidr route rules.
 	body, err := Assemble(AssembleOptions{
 		InboundMode:  InboundTProxy,
 		InboundPort:  2080,
-		RouteDomains: []string{"youtube.com", "  ", "#x", "youtube.com"},
+		RouteDomains: []string{"youtube.com"},
 		RouteCIDR:    []string{"203.0.113.0/24"},
 	}, []ProxyOutbound{{Tag: "p1", Object: vless}})
 	if err != nil {
@@ -120,29 +124,45 @@ func TestAssemble_TProxySelective(t *testing.T) {
 	json.Unmarshal(body, &cfg)
 	route := cfg["route"].(map[string]any)
 
-	// Selective: default is direct, only matched rules go to proxy.
-	if route["final"] != "direct" {
-		t.Errorf("transparent final should be direct, got %v", route["final"])
+	// Selection is at the iptables layer, so sing-box receives only proxy traffic.
+	if route["final"] != "proxy" {
+		t.Errorf("transparent final should be proxy, got %v", route["final"])
 	}
-	var domainRule, cidrRule map[string]any
 	for _, r := range route["rules"].([]any) {
 		m := r.(map[string]any)
-		if m["domain_suffix"] != nil {
-			domainRule = m
-		}
-		if m["ip_cidr"] != nil {
-			cidrRule = m
+		if m["domain_suffix"] != nil || m["ip_cidr"] != nil {
+			t.Errorf("tproxy should carry no in-sing-box domain/ip_cidr selection: %+v", m)
 		}
 	}
-	if domainRule == nil || domainRule["outbound"] != "proxy" {
-		t.Fatalf("missing domain->proxy rule: %+v", domainRule)
+	// QUIC is NOT rejected in tproxy (UDP is captured and proxied).
+	for _, r := range route["rules"].([]any) {
+		if r.(map[string]any)["protocol"] == "quic" {
+			t.Errorf("tproxy should not reject QUIC (UDP is proxied): %+v", r)
+		}
 	}
-	// Deduped + cleaned: youtube.com once, blank/comment dropped.
-	if got := domainRule["domain_suffix"].([]any); len(got) != 1 || got[0] != "youtube.com" {
-		t.Errorf("domain_suffix not cleaned/deduped: %v", got)
-	}
-	if cidrRule == nil || cidrRule["outbound"] != "proxy" {
-		t.Errorf("missing ip_cidr->proxy rule: %+v", cidrRule)
+}
+
+func TestAssemble_NoFakeIP(t *testing.T) {
+	vless := map[string]any{"type": "vless", "server": "h", "server_port": 1, "uuid": "u"}
+	// No mode uses FakeIP: transparent modes select at the iptables layer and
+	// never hijack client DNS, so the dns block stays a plain resolver.
+	for _, mode := range []string{InboundSocks, InboundRedirect, InboundTProxy, InboundTun} {
+		body, _ := Assemble(AssembleOptions{InboundMode: mode, InboundPort: 2080, RouteDomains: []string{"youtube.com"}}, []ProxyOutbound{{Tag: "p1", Object: vless}})
+		var cfg map[string]any
+		json.Unmarshal(body, &cfg)
+		dns := cfg["dns"].(map[string]any)
+		for _, s := range dns["servers"].([]any) {
+			if s.(map[string]any)["type"] == "fakeip" {
+				t.Errorf("%s must not use fakeip DNS", mode)
+			}
+		}
+		if dns["rules"] != nil {
+			t.Errorf("%s: dns must carry no fakeip routing rules: %+v", mode, dns["rules"])
+		}
+		cache := cfg["experimental"].(map[string]any)["cache_file"].(map[string]any)
+		if _, ok := cache["store_fakeip"]; ok {
+			t.Errorf("%s: store_fakeip must not be set", mode)
+		}
 	}
 }
 

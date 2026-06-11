@@ -643,7 +643,8 @@ func transparentConfigFromSettings(s settings.Settings, listCIDRs []string) tran
 		UseConntrack: s.UseConntrack,
 		// Static seed for the route ipset (redirect mode): manual RouteCIDR +
 		// CIDRs from URL lists. The resolver folds in resolved domain IPs.
-		RouteCIDR: append(append([]string{}, s.RouteCIDR...), listCIDRs...),
+		RouteCIDR:  append(append([]string{}, s.RouteCIDR...), listCIDRs...),
+		RejectCIDR: s.RejectCIDR,
 	}
 }
 
@@ -675,12 +676,11 @@ func (h *handlers) serversApply(w http.ResponseWriter, r *http.Request) {
 			st = s
 		}
 	}
-	// Get cached list CIDRs for the iptables/ipset firewall layer.
-	// Domains from URL lists are NOT put into sing-box rules (too expensive on
-	// a 512 MB router); they'll be handled via FakeIP DNS routing in future.
-	var listCIDRs []string
+	// Cached URL-list entries: domains drive sing-box domain_suffix rules (the
+	// stable selector for CDN-fronted services), CIDRs drive ip_cidr rules.
+	var listDomains, listCIDRs []string
 	if h.d.Lists != nil {
-		_, listCIDRs, _ = h.d.Lists.MergedEntries()
+		listDomains, listCIDRs, _ = h.d.Lists.MergedEntries()
 	}
 	body, err := config.Assemble(config.AssembleOptions{
 		DefaultOptions: config.DefaultOptions{
@@ -689,12 +689,14 @@ func (h *handlers) serversApply(w http.ResponseWriter, r *http.Request) {
 			ClashAddr:   h.d.ClashAddr,
 			ClashSecret: h.d.ClashSecret,
 		},
-		InboundMode:    st.InboundMode,
-		InboundPort:    st.InboundPort,
-		Tun:            config.TunOptions{Stack: st.TunStack, MTU: st.TunMTU},
-		RouteDomains:   st.RouteDomains,
-		RouteCIDR:      st.RouteCIDR,
-		ExtraRouteCIDR: listCIDRs, // from URL lists, Patricia trie (~2 MB per 1000)
+		InboundMode:       st.InboundMode,
+		InboundPort:       st.InboundPort,
+		Tun:               config.TunOptions{Stack: st.TunStack, MTU: st.TunMTU},
+		RouteDomains:      st.RouteDomains,
+		RouteCIDR:         st.RouteCIDR,
+		ExtraRouteDomains: listDomains, // from URL lists, domain_suffix trie
+		ExtraRouteCIDR:    listCIDRs,   // from URL lists, Patricia trie (~2 MB per 1000)
+		Multiplex:         st.Multiplex,
 	}, outs)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -844,15 +846,43 @@ func writeErr(w http.ResponseWriter, status int, err error) {
 
 // tailLines reads up to n trailing lines from path. Reads the whole file
 // (logs on the router are small; we can optimize later).
+// tailMaxBytes caps how much of the log file's tail tailLines reads into memory.
+// The sing-box log at info level grows to hundreds of MB; the old io.ReadAll of
+// the whole file blew the router's GOMEMLIMIT (120 MB) → OOM that killed the UI
+// process and made /api/logs return nothing. 256 KiB is ~1–2k recent lines.
+const tailMaxBytes = 256 << 10
+
 func tailLines(path string, n int) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	var start int64
+	if sz := fi.Size(); sz > tailMaxBytes {
+		start = sz - tailMaxBytes
+	}
+	if start > 0 {
+		if _, err := f.Seek(start, io.SeekStart); err != nil {
+			return nil, err
+		}
+	}
 	body, err := io.ReadAll(f)
 	if err != nil {
 		return nil, err
+	}
+	// Seeking lands mid-line; drop the partial first line so we return whole ones.
+	if start > 0 {
+		for i := 0; i < len(body); i++ {
+			if body[i] == '\n' {
+				body = body[i+1:]
+				break
+			}
+		}
 	}
 	lines := splitLines(string(body))
 	if len(lines) > n {
