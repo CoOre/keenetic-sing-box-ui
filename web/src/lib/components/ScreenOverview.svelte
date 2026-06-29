@@ -2,6 +2,7 @@
   import { api, ApiError } from "../api";
   import type { SystemInfo, InstallStatus } from "../types";
   import Icon from "./Icon.svelte";
+  import TunnelStatus from "./TunnelStatus.svelte";
 
   let { onNav }: { onNav: (r: string) => void } = $props();
 
@@ -162,6 +163,10 @@
 
   {#if error}
     <div class="callout err"><Icon name="alert" size={17} /><div class="callout-body">{error}</div></div>
+  {/if}
+
+  {#if installed && running}
+    <TunnelStatus />
   {/if}
 
   <!-- status tiles -->

@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"time"
 
 	"github.com/CoOre/keenetic-sing-box-ui/internal/auth"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/clash"
@@ -67,6 +69,9 @@ func Register(mux *http.ServeMux, a *auth.Authenticator, d *Deps) {
 	mux.Handle("GET /api/logs", protect(http.HandlerFunc(h.logs)))
 	mux.Handle("GET /api/diag/net", protect(http.HandlerFunc(h.diagNet)))
 	mux.Handle("POST /api/diag/exec", protect(http.HandlerFunc(h.diagExec)))
+	mux.Handle("POST /api/diag/mtu", protect(http.HandlerFunc(h.diagMTU)))
+	mux.Handle("POST /api/diag/mtu/clamp", protect(http.HandlerFunc(h.diagMTUClamp)))
+	mux.Handle("DELETE /api/diag/mtu/clamp", protect(http.HandlerFunc(h.diagMTUClampClear)))
 
 	if d.Servers != nil {
 		mux.Handle("POST /api/servers/parse", protect(http.HandlerFunc(h.serversParse)))
@@ -483,6 +488,96 @@ func (h *handlers) diagExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, step)
+}
+
+// serverIPv4 returns the IPv4 address of the configured proxy server (the tunnel
+// endpoint), resolving a hostname if necessary. Used to probe/clamp the path MTU
+// to the server.
+func (h *handlers) serverIPv4() (string, error) {
+	if h.d.Servers == nil {
+		return "", errors.New("no servers configured")
+	}
+	list, err := h.d.Servers.List()
+	if err != nil {
+		return "", err
+	}
+	var host string
+	for _, e := range list {
+		if e.Server.Server != "" {
+			host = e.Server.Server
+			break
+		}
+	}
+	if host == "" {
+		return "", errors.New("no server configured")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if v4 := ip.To4(); v4 != nil {
+			return v4.String(), nil
+		}
+		return "", fmt.Errorf("server %q is not IPv4", host)
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return "", fmt.Errorf("resolve %q: %w", host, err)
+	}
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil {
+			return v4.String(), nil
+		}
+	}
+	return "", fmt.Errorf("no IPv4 for %q", host)
+}
+
+// diagMTU probes the path MTU to the proxy server (ICMP + DF binary search) and
+// returns it plus the recommended TCP MSS.
+func (h *handlers) diagMTU(w http.ResponseWriter, r *http.Request) {
+	ip, err := h.serverIPv4()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+	res, err := system.ProbeMTU(ctx, ip)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+type mtuClampReq struct {
+	MSS int `json:"mss"`
+}
+
+// diagMTUClamp installs a TCP MSS clamp toward the proxy server (non-persistent).
+func (h *handlers) diagMTUClamp(w http.ResponseWriter, r *http.Request) {
+	var req mtuClampReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.MSS < 500 || req.MSS > 1460 {
+		writeErr(w, http.StatusBadRequest, errors.New("mss out of range (500–1460)"))
+		return
+	}
+	ip, err := h.serverIPv4()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := system.SetMSSClamp(r.Context(), cmdrun.OS{}, ip, req.MSS); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ip": ip, "mss": req.MSS, "applied": true})
+}
+
+// diagMTUClampClear removes the MSS clamp.
+func (h *handlers) diagMTUClampClear(w http.ResponseWriter, r *http.Request) {
+	system.ClearMSSClamp(r.Context(), cmdrun.OS{})
+	writeJSON(w, http.StatusOK, map[string]any{"cleared": true})
 }
 
 type logsResp struct {

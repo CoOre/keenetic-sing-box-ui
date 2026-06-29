@@ -43,6 +43,27 @@ func jumpArgs(proto, target string, useGoto bool) []string {
 	return []string{"-p", proto, "-m", "conntrack", "!", "--ctstate", "INVALID", jt, target}
 }
 
+// CaptureInstalled reports whether our PREROUTING capture jump is present for
+// the active mode's table. Cheap — a single `iptables -C`. The watchdog uses it
+// to detect that a firewall rebuild (e.g. KeeneticOS wiping our chains on a
+// WAN-interface change) left sing-box up but capture gone. The netfilter.d hook
+// is meant to re-drive Apply then, but doesn't fire on every such event on this
+// firmware, so the watchdog needs a way to notice independently. Mode off has
+// nothing to install, so it reports installed.
+func (e *Engine) CaptureInstalled(ctx context.Context, cfg Config) bool {
+	if cfg.Mode == ModeOff || cfg.Mode == "" {
+		return true
+	}
+	table := "nat"
+	if cfg.Mode == ModeTProxy {
+		table = "mangle"
+	}
+	// The tcp PREROUTING jump is installed for both modes; if a rebuild dropped
+	// our chains it's gone too, so checking it alone is a sufficient signal.
+	args := append([]string{"-w", "-t", table, "-C", "PREROUTING"}, jumpArgs("tcp", chainPrerouting, true)...)
+	return ok(ctx, e.Runner, "iptables", args...)
+}
+
 // ensureJump adds the PREROUTING->chain jump once (checked via -C). Goto: our
 // chain falls through to the table's ACCEPT policy when nothing matches.
 func (e *Engine) ensureJump(ctx context.Context, ipt, table, parent, target, proto string) {

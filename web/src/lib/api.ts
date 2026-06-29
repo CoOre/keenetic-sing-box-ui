@@ -220,8 +220,32 @@ export const api = {
   async clashSwitch(selector: string, name: string): Promise<void> {
     await request("PUT", `/api/clash/proxies/${encodeURIComponent(selector)}`, { name });
   },
+  // clashDelay does a real latency test through the named outbound (the actual
+  // VLESS server tag) — the ground truth for "is the tunnel established".
+  clashDelay(
+    name: string,
+    opts?: { url?: string; timeout?: number },
+  ): Promise<{ delay: number }> {
+    const url = encodeURIComponent(opts?.url ?? "http://www.gstatic.com/generate_204");
+    const timeout = opts?.timeout ?? 5000;
+    return request(
+      "GET",
+      `/api/clash/proxies/${encodeURIComponent(name)}/delay?timeout=${timeout}&url=${url}`,
+    );
+  },
   // Returns the absolute URL for the Clash traffic SSE-ish stream.
   clashTrafficURL(): string {
     return "/api/clash/traffic";
+  },
+
+  // --- MTU probe / clamp ---
+  probeMTU(): Promise<{ ip: string; pmtu: number; mss: number }> {
+    return request("POST", "/api/diag/mtu");
+  },
+  applyMSSClamp(mss: number): Promise<{ ip: string; mss: number; applied: boolean }> {
+    return request("POST", "/api/diag/mtu/clamp", { mss });
+  },
+  async clearMSSClamp(): Promise<void> {
+    await request("DELETE", "/api/diag/mtu/clamp");
   },
 };

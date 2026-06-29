@@ -50,6 +50,38 @@ func TestApplyTProxyRules(t *testing.T) {
 	}
 }
 
+func TestCaptureInstalled(t *testing.T) {
+	// Jump present: `iptables -C` succeeds (zero-value Fake = nil err) -> installed.
+	f := &cmdrun.Fake{}
+	e := &Engine{Runner: f}
+	if !e.CaptureInstalled(context.Background(), Config{Mode: ModeRedirect, RedirectPort: 2081}) {
+		t.Errorf("redirect: expected installed when -C succeeds")
+	}
+	if !hasCall(f.Calls, "-t nat -C PREROUTING -p tcp -m conntrack ! --ctstate INVALID -g "+chainPrerouting) {
+		t.Errorf("expected nat -C PREROUTING check, got %+v", f.Calls)
+	}
+
+	// Jump absent: -C errors -> not installed. TProxy probes the mangle table.
+	f2 := &cmdrun.Fake{Default: cmdrun.FakeResponse{Err: errStub}}
+	e2 := &Engine{Runner: f2}
+	if e2.CaptureInstalled(context.Background(), Config{Mode: ModeTProxy, TProxyPort: 2080}) {
+		t.Errorf("tproxy: expected not installed when -C errors")
+	}
+	if !hasCall(f2.Calls, "-t mangle -C PREROUTING") {
+		t.Errorf("expected mangle -C PREROUTING check, got %+v", f2.Calls)
+	}
+
+	// Mode off has nothing to install: reports installed, makes no iptables call.
+	f3 := &cmdrun.Fake{Default: cmdrun.FakeResponse{Err: errStub}}
+	e3 := &Engine{Runner: f3}
+	if !e3.CaptureInstalled(context.Background(), Config{Mode: ModeOff}) {
+		t.Errorf("off: expected installed")
+	}
+	if len(f3.Calls) != 0 {
+		t.Errorf("off: expected no iptables calls, got %d", len(f3.Calls))
+	}
+}
+
 func TestApplyTProxyPolicyGate(t *testing.T) {
 	f := &cmdrun.Fake{Default: cmdrun.FakeResponse{Err: errStub}}
 	e := &Engine{Runner: f}

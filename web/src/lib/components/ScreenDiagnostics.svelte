@@ -64,6 +64,32 @@
     finally { clashBusy = ""; }
   }
 
+  // --- MTU probe / clamp ---
+  let mtuBusy = $state(false);
+  let mtuRes = $state<{ ip: string; pmtu: number; mss: number } | null>(null);
+  let mtuError = $state("");
+  let mtuApplied = $state("");
+
+  async function probeMTU() {
+    mtuBusy = true; mtuError = ""; mtuApplied = ""; mtuRes = null;
+    try { mtuRes = await api.probeMTU(); }
+    catch (e) { mtuError = e instanceof Error ? e.message : String(e); }
+    finally { mtuBusy = false; }
+  }
+  async function applyClamp() {
+    if (!mtuRes) return;
+    mtuBusy = true; mtuError = "";
+    try { const r = await api.applyMSSClamp(mtuRes.mss); mtuApplied = `MSS ${r.mss} → ${r.ip}`; }
+    catch (e) { mtuError = e instanceof Error ? e.message : String(e); }
+    finally { mtuBusy = false; }
+  }
+  async function clearClamp() {
+    mtuBusy = true; mtuError = "";
+    try { await api.clearMSSClamp(); mtuApplied = "снят"; }
+    catch (e) { mtuError = e instanceof Error ? e.message : String(e); }
+    finally { mtuBusy = false; }
+  }
+
   function logClass(line: string): string {
     if (line.includes("ERR") || line.includes("ERRO") || line.includes("error")) return "l-err";
     if (line.includes("WARN")) return "l-warn";
@@ -109,6 +135,46 @@
         <p class="hint-text" style="display:flex;gap:7px">
           <Icon name="info" size={14} />Нажмите «Проверить конфиг», чтобы прогнать
           <span class="tag">sing-box check</span> перед применением.
+        </p>
+      {/if}
+    </div>
+  </div>
+
+  <!-- MTU probe -->
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <h3 class="card-title"><Icon name="activity" size={17} />Подбор MTU</h3>
+        <p class="card-sub">Пробивает path MTU до сервера (ICMP + DF) и рекомендует TCP MSS</p>
+      </div>
+      <div class="card-head-actions">
+        <button class="btn sm primary" disabled={mtuBusy} onclick={probeMTU}>
+          {#if mtuBusy}<span class="btn-spinner"></span>{:else}<Icon name="activity" size={14} />{/if}
+          Подобрать MTU
+        </button>
+      </div>
+    </div>
+    <div class="card-body">
+      {#if mtuError}
+        <div class="callout err"><Icon name="alert" size={17} /><div class="callout-body"><span class="mono" style="font-size:12px">{mtuError}</span></div></div>
+      {:else if mtuRes}
+        <div class="callout ok">
+          <Icon name="check" size={17} />
+          <div class="callout-body">
+            До <span class="tag">{mtuRes.ip}</span> path MTU = <b>{mtuRes.pmtu}</b>, рекомендуемый TCP MSS = <b>{mtuRes.mss}</b>.
+            {#if mtuApplied}<br /><span class="mono" style="font-size:12px">clamp: {mtuApplied}</span>{/if}
+          </div>
+        </div>
+        <div class="row" style="gap:8px;margin-top:10px">
+          <button class="btn sm" disabled={mtuBusy} onclick={applyClamp}><Icon name="save" size={14} />Применить MSS {mtuRes.mss}</button>
+          <button class="btn sm ghost" disabled={mtuBusy} onclick={clearClamp}><Icon name="trash" size={14} />Снять clamp</button>
+        </div>
+        <p class="hint-text" style="margin-top:8px;display:flex;gap:7px">
+          <Icon name="info" size={14} />Clamp временный (не переживёт перезагрузку/переприменение фаервола) — пока без персистентности.
+        </p>
+      {:else}
+        <p class="hint-text" style="display:flex;gap:7px">
+          <Icon name="info" size={14} />Нажмите «Подобрать MTU», если соединение с сервером тормозит на больших пакетах (признак PMTU-blackhole).
         </p>
       {/if}
     </div>

@@ -450,9 +450,43 @@ func runWatchdog(deps *api.Deps, log *slog.Logger) {
 		}
 		fcfg := transparentConfig(s)
 
+		// (Re)assert our firewall rules. Seeds the route ipset with URL-list CIDRs
+		// too (transparentConfig is settings-only); Up adds them additively, so
+		// resolver-added domain IPs already in the set are preserved.
+		assertFirewall := func() {
+			if deps.Firewall == nil || fcfg.Mode == transparent.ModeOff {
+				return
+			}
+			if deps.Lists != nil {
+				if _, lCIDRs, lerr := deps.Lists.MergedEntries(); lerr == nil {
+					fcfg.RouteCIDR = append(fcfg.RouteCIDR, lCIDRs...)
+				}
+			}
+			if err := deps.Firewall.Up(context.Background(), fcfg); err != nil {
+				log.Warn("watchdog: firewall up", "err", err)
+				return
+			}
+			// Re-resolve proxied domains into the set after (re)asserting.
+			if deps.Resolver != nil {
+				deps.Resolver.Refresh(context.Background())
+			}
+		}
+
 		// Cheap check: read /proc/net/tcp, zero subprocess spawning.
 		if transparent.ProxyListening(fcfg.InboundPort()) {
-			return // already up — do nothing
+			// sing-box is up — but our capture rules can be wiped out from under
+			// us while it keeps listening: KeeneticOS rebuilds its iptables chains
+			// on a WAN-interface change (e.g. a CGNAT uplink flap), dropping our
+			// PREROUTING jump. The netfilter.d hook is meant to re-drive Apply
+			// then, but doesn't fire on every such event on this firmware. So
+			// verify capture is still installed and reassert if not — otherwise a
+			// WAN flap silently stops proxying until a manual restart.
+			if deps.Firewall != nil && fcfg.Mode != transparent.ModeOff &&
+				!deps.Firewall.CaptureInstalled(context.Background(), fcfg) {
+				log.Info("watchdog: capture rules gone while sing-box up, reasserting firewall")
+				assertFirewall()
+			}
+			return
 		}
 
 		// sing-box is down: start it.
@@ -466,24 +500,7 @@ func runWatchdog(deps *api.Deps, log *slog.Logger) {
 		transparent.WaitProxy(fcfg.InboundPort(), 6*time.Second)
 
 		// Only assert firewall after an actual start event (not every tick).
-		if deps.Firewall == nil || fcfg.Mode == transparent.ModeOff {
-			return
-		}
-		// Seed the route ipset with the URL-list CIDRs too (transparentConfig is
-		// settings-only). Up adds these additively, so resolver-added domain IPs
-		// already in the set are preserved.
-		if deps.Lists != nil {
-			if _, lCIDRs, lerr := deps.Lists.MergedEntries(); lerr == nil {
-				fcfg.RouteCIDR = append(fcfg.RouteCIDR, lCIDRs...)
-			}
-		}
-		if err := deps.Firewall.Up(context.Background(), fcfg); err != nil {
-			log.Warn("watchdog: firewall up", "err", err)
-		}
-		// Re-resolve proxied domains into the set after reviving sing-box.
-		if deps.Resolver != nil {
-			deps.Resolver.Refresh(context.Background())
-		}
+		assertFirewall()
 	}
 
 	// Brief startup delay, then one immediate check (post-reboot / post-deploy).
