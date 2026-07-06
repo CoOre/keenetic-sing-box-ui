@@ -5,6 +5,7 @@ import type {
   CheckResult,
   LogsResult,
   ClashProxies,
+  ClashConnectionsSnapshot,
   BackupMeta,
   Server,
   ServersApplyResult,
@@ -239,6 +240,16 @@ export const api = {
   // Returns the absolute URL for the Clash traffic SSE-ish stream.
   clashTrafficURL(): string {
     return "/api/clash/traffic";
+  },
+  // Snapshot of live connections (GET /connections without websocket upgrade).
+  clashConnections(): Promise<ClashConnectionsSnapshot> {
+    return request("GET", "/api/clash/connections");
+  },
+  async clashConnectionClose(id: string): Promise<void> {
+    await request("DELETE", `/api/clash/connections/${encodeURIComponent(id)}`);
+  },
+  async clashConnectionsCloseAll(): Promise<void> {
+    await request("DELETE", "/api/clash/connections");
   },
 
   // --- updates ---

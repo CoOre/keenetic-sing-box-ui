@@ -62,6 +62,38 @@ export interface ClashTraffic {
   down: number;
 }
 
+// Snapshot of GET /connections (sing-box clash API without websocket upgrade).
+export interface ClashConnMeta {
+  network: string; // "tcp" | "udp"
+  type?: string;
+  sourceIP: string;
+  destinationIP: string;
+  sourcePort: string;
+  destinationPort: string;
+  host?: string; // sniffed domain (TLS SNI / HTTP Host)
+  inboundName?: string;
+  process?: string;
+  processPath?: string;
+}
+
+export interface ClashConnection {
+  id: string;
+  metadata: ClashConnMeta;
+  upload: number;
+  download: number;
+  start: string; // RFC3339
+  chains: string[]; // chains[0] — конечный outbound, последний — точка входа
+  rule: string;
+  rulePayload?: string;
+}
+
+export interface ClashConnectionsSnapshot {
+  downloadTotal: number;
+  uploadTotal: number;
+  connections?: ClashConnection[] | null;
+  memory?: number;
+}
+
 export interface BackupMeta {
   name: string;
   timestamp: string;

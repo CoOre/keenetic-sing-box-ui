@@ -41,6 +41,8 @@
     x: `<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>`,
     chevDown: `<polyline points="6 9 12 15 18 9"/>`,
     chevRight: `<polyline points="9 18 15 12 9 6"/>`,
+    connections: `<polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>`,
+    pause: `<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>`,
   };
 </script>
 

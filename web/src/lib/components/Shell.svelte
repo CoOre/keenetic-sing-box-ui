@@ -3,6 +3,7 @@
   import type { SystemInfo, InstallStatus } from "../types";
   import Icon from "./Icon.svelte";
   import ScreenOverview from "./ScreenOverview.svelte";
+  import ScreenConnections from "./ScreenConnections.svelte";
   import ScreenRouting from "./ScreenRouting.svelte";
   import ScreenServers from "./ScreenServers.svelte";
   import ScreenDiagnostics from "./ScreenDiagnostics.svelte";
@@ -12,9 +13,9 @@
 
   let { onLogout }: { onLogout: () => void } = $props();
 
-  type Route = "overview" | "routing" | "servers" | "diagnostics" | "advanced" | "security" | "setup";
+  type Route = "overview" | "connections" | "routing" | "servers" | "diagnostics" | "advanced" | "security" | "setup";
 
-  const ROUTES: Route[] = ["overview", "routing", "servers", "diagnostics", "advanced", "security", "setup"];
+  const ROUTES: Route[] = ["overview", "connections", "routing", "servers", "diagnostics", "advanced", "security", "setup"];
 
   function routeFromHash(): Route {
     const h = location.hash.replace(/^#\/?/, "");
@@ -78,6 +79,7 @@
 
   const NAV_MANAGE = [
     { id: "overview" as Route, label: "Обзор", icon: "overview" },
+    { id: "connections" as Route, label: "Соединения", icon: "connections" },
     { id: "routing" as Route, label: "Маршрутизация", icon: "route" },
     { id: "servers" as Route, label: "Серверы", icon: "server" },
     { id: "diagnostics" as Route, label: "Диагностика", icon: "diagnostics" },
@@ -89,6 +91,7 @@
 
   const TITLES: Record<string, [string, string]> = {
     overview:    ["Обзор", "Состояние системы и сервиса"],
+    connections: ["Соединения", "Живые соединения через sing-box"],
     routing:     ["Маршрутизация", "Режим перехвата, домены и подсети"],
     servers:     ["VPN-серверы", "Outbound-подключения sing-box"],
     diagnostics: ["Диагностика", "Логи, проверка конфига, outbounds"],
@@ -208,6 +211,8 @@
       {#key refreshKey}
         {#if route === "overview"}
           <ScreenOverview onNav={(r) => go(r as Route)} />
+        {:else if route === "connections"}
+          <ScreenConnections />
         {:else if route === "routing"}
           <ScreenRouting />
         {:else if route === "servers"}
