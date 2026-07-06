@@ -103,6 +103,12 @@ func TestAssemble_TProxyMode(t *testing.T) {
 	if !hasPrivate {
 		t.Error("tproxy mode missing private-range bypass rule")
 	}
+	// Transparent modes carry a loopback-only mixed inbound on port+1 so the
+	// router's own processes (e.g. update downloads) can enter the tunnel.
+	lb := cfg["inbounds"].([]any)[1].(map[string]any)
+	if lb["type"] != "mixed" || lb["listen"] != "127.0.0.1" || lb["listen_port"].(float64) != 7895 {
+		t.Errorf("loopback inbound: %+v", lb)
+	}
 }
 
 func TestAssemble_TProxySelective(t *testing.T) {

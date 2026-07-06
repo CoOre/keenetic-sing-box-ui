@@ -2,6 +2,7 @@
   import { api, ApiError } from "../api";
   import type { CheckResult, BackupMeta } from "../types";
   import Icon from "./Icon.svelte";
+  import UpdatesCard from "./UpdatesCard.svelte";
 
   let text = $state("");
   let original = $state("");
@@ -112,6 +113,8 @@
 </script>
 
 <div class="page wide stack">
+  <UpdatesCard />
+
   <div class="callout warn">
     <Icon name="warn" size={17} />
     <div class="callout-body">

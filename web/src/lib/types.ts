@@ -112,6 +112,34 @@ export interface SingboxSettings {
   route_cidr?: string[];
   reject_cidr?: string[];
   use_conntrack?: boolean;
+  // Auto-update toggles + check interval.
+  auto_update_singbox?: boolean;
+  auto_update_ui?: boolean;
+  update_check_hours?: number;
+}
+
+export interface UpdateComponent {
+  current?: string;
+  latest?: string;
+  available: boolean;
+  error?: string;
+}
+
+export interface UpdateStatus {
+  sing_box: UpdateComponent;
+  ui: UpdateComponent;
+  checked_at: string; // zero time => never checked yet
+  checking?: boolean;
+  updating?: string; // "singbox" | "ui" while an install runs
+  last_result?: string; // outcome of the most recent detached install
+  last_error?: string;
+}
+
+export interface UpdateStatusResp {
+  status: UpdateStatus;
+  auto_update_singbox: boolean;
+  auto_update_ui: boolean;
+  update_check_hours: number;
 }
 
 export interface KeeneticPolicy {

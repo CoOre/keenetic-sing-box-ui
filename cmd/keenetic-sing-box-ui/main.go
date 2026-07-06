@@ -29,6 +29,7 @@ import (
 	"github.com/CoOre/keenetic-sing-box-ui/internal/singbox"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/system"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/transparent"
+	"github.com/CoOre/keenetic-sing-box-ui/internal/update"
 	"github.com/CoOre/keenetic-sing-box-ui/web"
 )
 
@@ -288,6 +289,21 @@ func runServer(args []string) int {
 		Lists:    deps.Lists,
 		Log:      logger,
 	}
+	// Version checker/updater for sing-box and the UI itself. Always checks in
+	// the background (badge in the UI); installs automatically only when the
+	// per-component settings toggles are on.
+	deps.Update = &update.Manager{
+		SingBoxGH:  deps.Github,
+		UIGH:       singbox.NewGithubUI(selfPath()),
+		Service:    deps.Service,
+		Settings:   deps.Settings,
+		Runner:     cmdrun.OS{},
+		SingBoxBin: paths.SingBoxBin,
+		UIVersion:  version,
+		UIInit:     paths.UIInit,
+		Log:        logger,
+	}
+
 	// Background: auto-start sing-box if installed + watchdog to revive it.
 	go runWatchdog(deps, logger)
 
@@ -319,6 +335,7 @@ func runServer(args []string) int {
 	defer stop()
 
 	go deps.Resolver.Start(ctx)
+	go deps.Update.Run(ctx)
 
 	go func() {
 		logger.Info("listening http", "addr", httpAddr, "https_redirect", uiCfg.HTTPSOnly)

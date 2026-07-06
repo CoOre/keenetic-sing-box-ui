@@ -37,6 +37,13 @@ type Settings struct {
 	// user-curated list, not a built-in constant.
 	RejectCIDR []string `json:"reject_cidr"`
 
+	// Auto-update: the background checker always polls GitHub for new
+	// sing-box/UI releases (badge in the UI); these toggles additionally let it
+	// install them unattended. UpdateCheckHours is the polling interval.
+	AutoUpdateSingBox bool `json:"auto_update_singbox"`
+	AutoUpdateUI      bool `json:"auto_update_ui"`
+	UpdateCheckHours  int  `json:"update_check_hours"`
+
 	// Multiplex enables sing-box stream multiplexing (h2mux) on the proxy
 	// outbounds. Chatty apps (Telegram opens dozens of short-lived TCP
 	// connections to its DCs) otherwise pay a full TLS handshake per connection
@@ -49,7 +56,7 @@ type Settings struct {
 // Defaults: socks/mixed on :2080 — the mode proven to coexist with a router's
 // own VPN routing. tun tuning is kept for when tun mode is selected.
 func Defaults() Settings {
-	return Settings{InboundMode: "socks", InboundPort: 2080, TunStack: "gvisor", TunMTU: 1380}
+	return Settings{InboundMode: "socks", InboundPort: 2080, TunStack: "gvisor", TunMTU: 1380, UpdateCheckHours: 6}
 }
 
 type Store struct {
@@ -112,5 +119,11 @@ func (s *Settings) normalize() {
 	}
 	if s.TunMTU <= 0 {
 		s.TunMTU = 1380
+	}
+	if s.UpdateCheckHours <= 0 {
+		s.UpdateCheckHours = 6
+	}
+	if s.UpdateCheckHours > 168 {
+		s.UpdateCheckHours = 168
 	}
 }

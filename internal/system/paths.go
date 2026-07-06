@@ -12,6 +12,8 @@ type Paths struct {
 	SingBoxInit   string `json:"sing_box_init"`
 	UIConfigDir   string `json:"ui_config_dir"`
 	UITLSDir      string `json:"ui_tls_dir"`
+	UIBin         string `json:"ui_bin"`
+	UIInit        string `json:"ui_init"`
 }
 
 func DefaultPaths() Paths {
@@ -30,5 +32,7 @@ func PathsRooted(root string) Paths {
 		SingBoxInit:   filepath.Join(opt, "etc", "init.d", "S99sing-box"),
 		UIConfigDir:   filepath.Join(opt, "etc", "keenetic-sing-box-ui"),
 		UITLSDir:      filepath.Join(opt, "etc", "keenetic-sing-box-ui", "tls"),
+		UIBin:         filepath.Join(opt, "bin", "keenetic-sing-box-ui"),
+		UIInit:        filepath.Join(opt, "etc", "init.d", "S99keenetic-sing-box-ui"),
 	}
 }

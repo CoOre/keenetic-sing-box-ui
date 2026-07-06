@@ -11,6 +11,8 @@ import type {
   SingboxSettings,
   KeeneticPolicy,
   ListSource,
+  UpdateStatus,
+  UpdateStatusResp,
 } from "./types";
 
 export class ApiError extends Error {
@@ -236,6 +238,18 @@ export const api = {
   // Returns the absolute URL for the Clash traffic SSE-ish stream.
   clashTrafficURL(): string {
     return "/api/clash/traffic";
+  },
+
+  // --- updates ---
+  updateStatus(): Promise<UpdateStatusResp> {
+    return request("GET", "/api/update/status");
+  },
+  updateCheck(): Promise<UpdateStatus> {
+    return request("POST", "/api/update/check", {});
+  },
+  // Kicks off a detached install; outcome arrives via updateStatus polling.
+  updateApply(target: "singbox" | "ui"): Promise<{ target: string; started: boolean }> {
+    return request("POST", "/api/update/apply", { target });
   },
 
   // --- MTU probe / clamp ---

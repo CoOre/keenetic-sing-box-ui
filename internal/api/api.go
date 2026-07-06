@@ -27,6 +27,7 @@ import (
 	"github.com/CoOre/keenetic-sing-box-ui/internal/singbox"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/system"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/transparent"
+	"github.com/CoOre/keenetic-sing-box-ui/internal/update"
 )
 
 type Deps struct {
@@ -46,6 +47,7 @@ type Deps struct {
 	Lists       *lists.Store
 	ListRunner  *lists.Runner
 	Resolver    *resolve.Resolver
+	Update      *update.Manager
 }
 
 // Register mounts all /api/* routes on mux behind RequireAuth + RequireCSRF.
@@ -84,6 +86,12 @@ func Register(mux *http.ServeMux, a *auth.Authenticator, d *Deps) {
 	if d.Settings != nil {
 		mux.Handle("GET /api/settings", protect(http.HandlerFunc(h.settingsGet)))
 		mux.Handle("PUT /api/settings", protect(http.HandlerFunc(h.settingsSave)))
+	}
+
+	if d.Update != nil {
+		mux.Handle("GET /api/update/status", protect(http.HandlerFunc(h.updateStatus)))
+		mux.Handle("POST /api/update/check", protect(http.HandlerFunc(h.updateCheck)))
+		mux.Handle("POST /api/update/apply", protect(http.HandlerFunc(h.updateApply)))
 	}
 
 	mux.Handle("GET /api/transparent/policies", protect(http.HandlerFunc(h.transparentPolicies)))
@@ -619,7 +627,14 @@ func (h *handlers) settingsGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) settingsSave(w http.ResponseWriter, r *http.Request) {
-	var in settings.Settings
+	// Decode over the currently stored settings so a client built against an
+	// older schema (omitting newer fields, e.g. the auto-update toggles)
+	// doesn't silently reset them to zero values.
+	in, err := h.d.Settings.Get()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	// RouteCIDR/RouteDomains can legitimately hold a few hundred to a few
 	// thousand manually-curated entries (a 240-CIDR list alone is ~4 KiB), so
 	// the old 4 KiB cap rejected real saves with "request body too large".
@@ -999,4 +1014,62 @@ func splitLines(s string) []string {
 		out = append(out, s[start:])
 	}
 	return out
+}
+
+// --- update endpoints ---
+
+// updateStatus returns the cached result of the last background version
+// check plus the auto-update preferences — no network I/O.
+func (h *handlers) updateStatus(w http.ResponseWriter, r *http.Request) {
+	st := h.d.Update.Status()
+	s, err := h.d.Settings.Get()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":              st,
+		"auto_update_singbox": s.AutoUpdateSingBox,
+		"auto_update_ui":      s.AutoUpdateUI,
+		"update_check_hours":  s.UpdateCheckHours,
+	})
+}
+
+// updateCheck forces a live check against GitHub and returns the fresh
+// status.
+func (h *handlers) updateCheck(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, h.d.Update.Check(r.Context()))
+}
+
+type updateApplyReq struct {
+	Target string `json:"target"` // "singbox" | "ui"
+}
+
+// updateApply kicks off installing the latest release of the requested
+// component and returns immediately: downloads can take minutes and must not
+// die with the client connection, so the install runs detached and the UI
+// tracks progress/outcome by polling /api/update/status (Updating +
+// LastResult/LastError). For target "ui" the process self-restarts when the
+// install succeeds.
+func (h *handlers) updateApply(w http.ResponseWriter, r *http.Request) {
+	var req updateApplyReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var err error
+	switch req.Target {
+	case "singbox":
+		err = h.d.Update.UpdateSingBoxDetached()
+	case "ui":
+		err = h.d.Update.UpdateUIDetached()
+	default:
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown target %q (want singbox|ui)", req.Target))
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"target": req.Target, "started": true})
 }

@@ -18,16 +18,55 @@ import (
 
 const (
 	DefaultRepo = "SagerNet/sing-box"
+	UIRepo      = "CoOre/keenetic-sing-box-ui"
 )
 
 type Github struct {
 	HTTP    *http.Client
 	Repo    string
 	DestBin string
+	// BinName is the basename of the executable to extract from the release
+	// archive. Empty means "sing-box".
+	BinName string
+	// Suffix maps a GOARCH value to the release-asset filename suffix. Nil
+	// means the sing-box convention "linux-<arch>.tar.gz".
+	Suffix func(arch string) string
 }
 
 func NewGithub(destBin string) *Github {
 	return &Github{HTTP: http.DefaultClient, Repo: DefaultRepo, DestBin: destBin}
+}
+
+// NewGithubUI targets this UI's own releases (self-update). Packaged archives
+// are named keenetic-sing-box-ui_<tag>_aarch64.tar.gz and contain the binary
+// under opt/bin/.
+func NewGithubUI(destBin string) *Github {
+	return &Github{
+		HTTP:    http.DefaultClient,
+		Repo:    UIRepo,
+		DestBin: destBin,
+		BinName: "keenetic-sing-box-ui",
+		Suffix: func(arch string) string {
+			if arch == "arm64" {
+				arch = "aarch64"
+			}
+			return "_" + arch + ".tar.gz"
+		},
+	}
+}
+
+func (g *Github) binName() string {
+	if g.BinName == "" {
+		return "sing-box"
+	}
+	return g.BinName
+}
+
+func (g *Github) archiveSuffix(arch string) string {
+	if g.Suffix != nil {
+		return g.Suffix(arch)
+	}
+	return fmt.Sprintf("linux-%s.tar.gz", arch)
 }
 
 type Asset struct {
@@ -78,7 +117,7 @@ func (g *Github) ResolveLatest(ctx context.Context, baseURL, arch string) (Asset
 	}
 
 	// Prefer the plain .tar.gz; skip companions like .tar.gz.asc/.sig.
-	archiveSuffix := fmt.Sprintf("linux-%s.tar.gz", arch)
+	archiveSuffix := g.archiveSuffix(arch)
 	var archive *apiAsset
 	for i, a := range rel.Assets {
 		if strings.HasSuffix(a.Name, archiveSuffix) {
@@ -139,7 +178,7 @@ func (g *Github) Install(ctx context.Context, asset Asset) error {
 		return err
 	}
 
-	binSrc, err := extractSingBox(archivePath, tmpDir)
+	binSrc, err := extractBinary(archivePath, tmpDir, g.binName())
 	if err != nil {
 		return err
 	}
@@ -179,7 +218,7 @@ func (g *Github) download(ctx context.Context, url, dest, expectedSHA string) er
 	return nil
 }
 
-func extractSingBox(archivePath, workDir string) (string, error) {
+func extractBinary(archivePath, workDir, binName string) (string, error) {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return "", err
@@ -194,7 +233,7 @@ func extractSingBox(archivePath, workDir string) (string, error) {
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return "", errors.New("sing-box binary not found in archive")
+			return "", fmt.Errorf("%s binary not found in archive", binName)
 		}
 		if err != nil {
 			return "", err
@@ -202,7 +241,7 @@ func extractSingBox(archivePath, workDir string) (string, error) {
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
-		if filepath.Base(hdr.Name) != "sing-box" {
+		if filepath.Base(hdr.Name) != binName {
 			continue
 		}
 		// Reject absolute paths and parent traversal.
@@ -210,7 +249,7 @@ func extractSingBox(archivePath, workDir string) (string, error) {
 		if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
 			return "", fmt.Errorf("unsafe path in archive: %s", hdr.Name)
 		}
-		out := filepath.Join(workDir, "sing-box")
+		out := filepath.Join(workDir, binName)
 		fw, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 		if err != nil {
 			return "", err

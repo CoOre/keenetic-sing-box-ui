@@ -94,6 +94,12 @@ func (d *Detector) serviceRunning(ctx context.Context) bool {
 	return strings.Contains(out, "alive") || strings.Contains(out, "running")
 }
 
+// SingBoxVersion reports the version string of an installed sing-box binary
+// by running `<bin> version`.
+func SingBoxVersion(ctx context.Context, runner cmdrun.Runner, bin string) (string, error) {
+	return singBoxVersion(ctx, runner, bin)
+}
+
 var versionRe = regexp.MustCompile(`(?m)version\s+([0-9][^\s]*)`)
 
 func singBoxVersion(ctx context.Context, runner cmdrun.Runner, bin string) (string, error) {

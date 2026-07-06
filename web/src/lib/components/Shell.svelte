@@ -29,6 +29,7 @@
   let info = $state<SystemInfo | null>(null);
   let install = $state<InstallStatus | null>(null);
   let serverCount = $state(0);
+  let updateAvailable = $state(false);
 
   async function loadSidebar() {
     try {
@@ -39,6 +40,10 @@
     try {
       const list = await api.serverList();
       serverCount = list.length;
+    } catch { /* ignore */ }
+    try {
+      const upd = await api.updateStatus();
+      updateAvailable = upd.status.sing_box.available || upd.status.ui.available;
     } catch { /* ignore */ }
   }
 
@@ -87,7 +92,7 @@
     routing:     ["Маршрутизация", "Режим перехвата, домены и подсети"],
     servers:     ["VPN-серверы", "Outbound-подключения sing-box"],
     diagnostics: ["Диагностика", "Логи, проверка конфига, outbounds"],
-    advanced:    ["Дополнительно", "Raw config и резервные копии"],
+    advanced:    ["Дополнительно", "Обновления, raw config и резервные копии"],
     security:    ["Безопасность", "Пароль и сессия"],
     setup:       ["Установка sing-box", "Пошаговый мастер"],
   };
@@ -160,6 +165,9 @@
           onkeydown={(e) => e.key === "Enter" && go(n.id)}
         >
           <Icon name={n.icon} size={17} />{n.label}
+          {#if n.id === "advanced" && updateAvailable}
+            <span class="badge" title="Доступны обновления">↑</span>
+          {/if}
         </div>
       {/each}
     </nav>

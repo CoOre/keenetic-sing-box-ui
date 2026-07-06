@@ -53,7 +53,7 @@ func TestExtractSingBox(t *testing.T) {
 	if err := os.WriteFile(arc, makeArchive(t, "sing-box-1.10.7-linux-arm64", "BINARY"), 0o644); err != nil {
 		t.Fatalf("write archive: %v", err)
 	}
-	out, err := extractSingBox(arc, tmp)
+	out, err := extractBinary(arc, tmp, "sing-box")
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}

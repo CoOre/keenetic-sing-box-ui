@@ -232,6 +232,7 @@ func inboundsFor(opts AssembleOptions, tun TunOptions) []any {
 				"listen":      "0.0.0.0",
 				"listen_port": opts.InboundPort,
 			},
+			loopbackInbound(opts.InboundPort),
 		}
 	case InboundRedirect:
 		// Transparent REDIRECT target (TCP only); the firewall engine installs
@@ -243,6 +244,7 @@ func inboundsFor(opts AssembleOptions, tun TunOptions) []any {
 				"listen":      "0.0.0.0",
 				"listen_port": opts.InboundPort,
 			},
+			loopbackInbound(opts.InboundPort),
 		}
 	default: // InboundTun
 		return []any{
@@ -275,6 +277,24 @@ func transparentInboundTag(mode string) string {
 // traffic (as opposed to socks, an explicit proxy clients opt into).
 func isTransparent(mode string) bool {
 	return mode == InboundTProxy || mode == InboundRedirect || mode == InboundTun
+}
+
+// LoopbackProxyPort returns the port of the loopback mixed inbound that
+// accompanies the transparent modes (see loopbackInbound).
+func LoopbackProxyPort(inboundPort int) int { return inboundPort + 1 }
+
+// loopbackInbound is a mixed (SOCKS+HTTP) inbound bound to loopback only,
+// added alongside the transparent inbounds. The router's own egress is not
+// captured by the PREROUTING rules, so local consumers (e.g. the UI
+// downloading release archives from hosts the ISP interferes with) need an
+// explicit proxy entry point into the tunnel; final=proxy routes it there.
+func loopbackInbound(inboundPort int) map[string]any {
+	return map[string]any{
+		"type":        "mixed",
+		"tag":         "loopback-in",
+		"listen":      "127.0.0.1",
+		"listen_port": LoopbackProxyPort(inboundPort),
+	}
 }
 
 // routeFinalFor picks the catch-all outbound. Every mode now sends final=proxy:
