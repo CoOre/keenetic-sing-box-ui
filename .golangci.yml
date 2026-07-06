@@ -9,6 +9,7 @@ linters:
       # actionable. Listing them here is cleaner than peppering `_ =` around.
       exclude-functions:
         - (io.Closer).Close
+        - (net.PacketConn).Close
         - (*os.File).Close
         - (*compress/gzip.Reader).Close
         - (*compress/gzip.Writer).Close
