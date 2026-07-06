@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, ApiError } from "../api";
-  import type { CheckResult, ClashProxyNode } from "../types";
+  import type { CheckResult, ClashProxyNode, TraceReport, TraceRuleMatch, TraceVerdict } from "../types";
   import Icon from "./Icon.svelte";
 
   let lines = $state<string[]>([]);
@@ -90,6 +90,66 @@
     finally { mtuBusy = false; }
   }
 
+  // --- route trace ---
+  let traceTarget = $state("");
+  let traceBusy = $state(false);
+  let traceError = $state("");
+  let traceRep = $state<TraceReport | null>(null);
+
+  async function runTrace() {
+    const t = traceTarget.trim();
+    if (!t || traceBusy) return;
+    traceBusy = true; traceError = ""; traceRep = null;
+    try { traceRep = await api.diagTrace(t); }
+    catch (e) { traceError = e instanceof Error ? e.message : String(e); }
+    finally { traceBusy = false; }
+  }
+
+  const verdictText: Record<TraceVerdict, string> = {
+    proxy: "через прокси",
+    direct: "напрямую (не в route-set)",
+    bypass: "напрямую (exclude)",
+    reject: "блокируется (reject-set, порт 443)",
+    capture_missing: "в route-set, но перехват СНЯТ — уходит напрямую!",
+    no_capture: "прозрачный перехват не активен",
+    unknown: "неизвестно",
+  };
+
+  function verdictClass(v: TraceVerdict): string {
+    switch (v) {
+      case "proxy": return "ok";
+      case "capture_missing": case "reject": return "err";
+      default: return "";
+    }
+  }
+
+  function matchLabel(m: TraceRuleMatch): string {
+    switch (m.source) {
+      case "route_domains": return `route_domains: ${m.entry}` + (m.match === "suffix" ? " (родительский домен)" : "");
+      case "route_cidr": return `route_cidr: ${m.entry}`;
+      case "exclude_cidr": return `exclude_cidr: ${m.entry}`;
+      case "reject_cidr": return `reject_cidr: ${m.entry}`;
+      case "list": return `список ${shortURL(m.list_url ?? "")}: ${m.entry}`;
+    }
+  }
+
+  function matchNote(m: TraceRuleMatch): string {
+    if (m.effective) return "";
+    if (m.source === "list" && m.list_kind === "domain")
+      return "домены из URL-списков не резолвятся в ipset — не влияет на маршрут";
+    if (m.source === "route_domains" && m.match === "suffix")
+      return "резолвится только указанное имя; IP поддомена могут не попасть в set";
+    return "не влияет";
+  }
+
+  function shortURL(u: string): string {
+    try {
+      const p = new URL(u);
+      const last = p.pathname.split("/").filter(Boolean).pop();
+      return last ? `${p.hostname}/…/${last}` : p.hostname;
+    } catch { return u; }
+  }
+
   function logClass(line: string): string {
     if (line.includes("ERR") || line.includes("ERRO") || line.includes("error")) return "l-err";
     if (line.includes("WARN")) return "l-warn";
@@ -99,6 +159,109 @@
 </script>
 
 <div class="page stack">
+  <!-- Route trace -->
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <h3 class="card-title"><Icon name="route" size={17} />Трассировка маршрута</h3>
+        <p class="card-sub">Почему этот сайт (не) идёт через прокси: резолвинг, ipset, conntrack, outbound</p>
+      </div>
+    </div>
+    <div class="card-body stack-sm">
+      <form class="row" style="gap:8px" onsubmit={(e) => { e.preventDefault(); runTrace(); }}>
+        <input
+          class="input mono"
+          style="flex:1"
+          placeholder="домен, IP или URL — например web.telegram.org"
+          bind:value={traceTarget}
+          disabled={traceBusy}
+        />
+        <button class="btn sm primary" type="submit" disabled={traceBusy || !traceTarget.trim()}>
+          {#if traceBusy}<span class="btn-spinner"></span>{:else}<Icon name="route" size={14} />{/if}
+          Трассировать
+        </button>
+      </form>
+
+      {#if traceError}
+        <div class="callout err"><Icon name="alert" size={17} /><div class="callout-body">{traceError}</div></div>
+      {:else if traceRep}
+        {@const r = traceRep}
+        <p class="hint-text">
+          <span class="tag">{r.target}</span> · режим <span class="tag">{r.mode}</span>
+          {#if r.capture_installed === false}
+            · <b style="color:var(--err-text,#e5484d)">перехват PREROUTING не установлен</b>
+          {:else if r.capture_installed}
+            · перехват активен
+          {/if}
+          {#if r.outbound}
+            · outbound: {#if r.outbound.error}<span class="tag">{r.outbound.selector}</span> недоступен{:else}<span class="tag">{r.outbound.selector} → {r.outbound.now}</span>{/if}
+          {/if}
+        </p>
+
+        {#if r.resolve_error}
+          <div class="callout err">
+            <Icon name="alert" size={17} />
+            <div class="callout-body">Не резолвится: <span class="mono" style="font-size:12px">{r.resolve_error}</span></div>
+          </div>
+        {/if}
+
+        {#if (r.domain_matches ?? []).length > 0}
+          <div class="stack-sm">
+            {#each r.domain_matches ?? [] as m}
+              <p class="hint-text" style="display:flex;gap:7px;align-items:baseline">
+                <Icon name={m.effective ? "check" : "info"} size={13} />
+                <span><span class="mono" style="font-size:12px">{matchLabel(m)}</span>{#if matchNote(m)} — {matchNote(m)}{/if}</span>
+              </p>
+            {/each}
+          </div>
+        {:else if r.kind === "domain"}
+          <p class="hint-text">Домен не найден ни в route_domains, ни в URL-списках.</p>
+        {/if}
+
+        {#if r.ips.length === 0 && !r.resolve_error}
+          <p class="hint-text">Нет IPv4-адресов для проверки.</p>
+        {/if}
+
+        {#each r.ips as ipr (ipr.ip)}
+          <div class={"callout " + verdictClass(ipr.verdict)}>
+            <Icon name={ipr.verdict === "proxy" ? "check" : ipr.verdict === "capture_missing" || ipr.verdict === "reject" ? "alert" : "info"} size={17} />
+            <div class="callout-body">
+              <b class="mono">{ipr.ip}</b> → <b>{verdictText[ipr.verdict]}</b>
+              <span class="hint-text" style="font-size:11.5px"> ({ipr.verdict_source === "live" ? "по живому ipset" : "по настройкам"})</span>
+              {#if ipr.sets}
+                <br /><span class="mono" style="font-size:12px">
+                  route:{ipr.sets.route ? "✓" : "—"} exclude:{ipr.sets.exclude ? "✓" : "—"} reject:{ipr.sets.reject ? "✓" : "—"}
+                  {#if ipr.sets.err} · {ipr.sets.err}{/if}
+                </span>
+              {/if}
+              {#each ipr.matches ?? [] as m}
+                <br /><span class="mono" style="font-size:12px">{matchLabel(m)}</span>{#if matchNote(m)}<span class="hint-text" style="font-size:11.5px"> — {matchNote(m)}</span>{/if}
+              {/each}
+              {#if ipr.conntrack_total > 0}
+                <br /><span class="hint-text" style="font-size:11.5px">активных соединений: {ipr.conntrack_total}</span>
+                {#each ipr.conntrack ?? [] as f}
+                  <br /><span class="mono" style="font-size:12px">
+                    {f.proto} {f.src}:{f.sport} → :{f.dport}
+                    {#if f.state} {f.state}{/if}
+                    {#if f.redirected} · REDIRECT{/if}
+                    {#if f.mark} · mark={f.mark}{/if}
+                  </span>
+                {/each}
+              {:else}
+                <br /><span class="hint-text" style="font-size:11.5px">активных соединений нет{#if r.conntrack_error} (conntrack: {r.conntrack_error}){/if}</span>
+              {/if}
+            </div>
+          </div>
+        {/each}
+      {:else}
+        <p class="hint-text" style="display:flex;gap:7px">
+          <Icon name="info" size={14} />Введите домен или IP: покажет, как он резолвится, из какого правила
+          попал (или не попал) в route-set и что с ним сделает фаервол.
+        </p>
+      {/if}
+    </div>
+  </div>
+
   <!-- Config check -->
   <div class="card">
     <div class="card-head">

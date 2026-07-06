@@ -26,6 +26,7 @@ import (
 	"github.com/CoOre/keenetic-sing-box-ui/internal/share"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/singbox"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/system"
+	"github.com/CoOre/keenetic-sing-box-ui/internal/trace"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/transparent"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/update"
 )
@@ -71,6 +72,7 @@ func Register(mux *http.ServeMux, a *auth.Authenticator, d *Deps) {
 	mux.Handle("GET /api/logs", protect(http.HandlerFunc(h.logs)))
 	mux.Handle("GET /api/diag/net", protect(http.HandlerFunc(h.diagNet)))
 	mux.Handle("POST /api/diag/exec", protect(http.HandlerFunc(h.diagExec)))
+	mux.Handle("POST /api/diag/trace", protect(http.HandlerFunc(h.diagTrace)))
 	mux.Handle("POST /api/diag/mtu", protect(http.HandlerFunc(h.diagMTU)))
 	mux.Handle("POST /api/diag/mtu/clamp", protect(http.HandlerFunc(h.diagMTUClamp)))
 	mux.Handle("DELETE /api/diag/mtu/clamp", protect(http.HandlerFunc(h.diagMTUClampClear)))
@@ -496,6 +498,49 @@ func (h *handlers) diagExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, step)
+}
+
+type diagTraceReq struct {
+	Target string `json:"target"`
+}
+
+// diagTrace runs the route trace for one domain/IP: resolution, rule-source
+// attribution, live ipset membership, conntrack flows and the current
+// outbound — the "why does this site (not) go through the proxy" answer.
+func (h *handlers) diagTrace(w http.ResponseWriter, r *http.Request) {
+	var req diagTraceReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	st := settings.Defaults()
+	if h.d.Settings != nil {
+		if s, err := h.d.Settings.Get(); err == nil {
+			st = s
+		}
+	}
+	var srcs []*lists.Source
+	var listCIDRs []string
+	if h.d.Lists != nil {
+		srcs, _ = h.d.Lists.List()
+		_, listCIDRs, _ = h.d.Lists.MergedEntries()
+	}
+	t := &trace.Tracer{
+		Settings:     st,
+		Sources:      srcs,
+		Engine:       h.d.Firewall,
+		EngineConfig: transparentConfigFromSettings(st, listCIDRs),
+		ClashAddr:    h.d.ClashAddr,
+		ClashSecret:  h.d.ClashSecret,
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	rep, err := t.Run(ctx, req.Target)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 // serverIPv4 returns the IPv4 address of the configured proxy server (the tunnel

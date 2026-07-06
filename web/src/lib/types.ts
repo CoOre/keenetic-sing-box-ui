@@ -160,3 +160,63 @@ export interface ListSource {
   domains?: string[];
   cidrs?: string[];
 }
+
+// --- route trace (/api/diag/trace) ---
+
+export interface TraceRuleMatch {
+  source: "route_domains" | "route_cidr" | "exclude_cidr" | "reject_cidr" | "list";
+  entry: string;
+  match?: "exact" | "suffix";
+  list_url?: string;
+  list_kind?: "domain" | "cidr";
+  effective: boolean;
+}
+
+export interface TraceSets {
+  route: boolean;
+  exclude: boolean;
+  reject: boolean;
+  err?: string;
+}
+
+export interface TraceFlow {
+  proto: string;
+  state?: string;
+  src: string;
+  sport: number;
+  dport: number;
+  reply_src?: string;
+  mark?: string;
+  redirected: boolean;
+}
+
+export type TraceVerdict =
+  | "proxy"
+  | "direct"
+  | "bypass"
+  | "reject"
+  | "capture_missing"
+  | "no_capture"
+  | "unknown";
+
+export interface TraceIPReport {
+  ip: string;
+  sets?: TraceSets;
+  matches?: TraceRuleMatch[];
+  conntrack?: TraceFlow[];
+  conntrack_total: number;
+  verdict: TraceVerdict;
+  verdict_source: "live" | "static";
+}
+
+export interface TraceReport {
+  target: string;
+  kind: "domain" | "ip";
+  mode: string;
+  capture_installed?: boolean;
+  resolve_error?: string;
+  domain_matches?: TraceRuleMatch[];
+  ips: TraceIPReport[];
+  conntrack_error?: string;
+  outbound?: { selector: string; now?: string; error?: string };
+}

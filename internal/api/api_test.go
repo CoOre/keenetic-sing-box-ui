@@ -450,3 +450,47 @@ func TestLogs_TailLastN(t *testing.T) {
 		t.Errorf("last line: %q", r.Lines[2])
 	}
 }
+
+func TestDiagTrace_IPTarget(t *testing.T) {
+	e := newEnv(t)
+	// Static settings: redirect mode with the target inside route_cidr. No
+	// firewall engine is wired in the test env, so the verdict must come from
+	// the static rule matches.
+	if _, err := e.deps.Settings.Save(settings.Settings{
+		InboundMode: "redirect", InboundPort: 1081,
+		RouteCIDR: []string{"149.154.160.0/20"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := e.bearer("POST", "/api/diag/trace", []byte(`{"target":"149.154.167.99:443"}`))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var rep struct {
+		Target string `json:"target"`
+		Kind   string `json:"kind"`
+		Mode   string `json:"mode"`
+		IPs    []struct {
+			IP            string `json:"ip"`
+			Verdict       string `json:"verdict"`
+			VerdictSource string `json:"verdict_source"`
+		} `json:"ips"`
+	}
+	mustJSON(t, readAll(t, resp), &rep)
+	if rep.Target != "149.154.167.99" || rep.Kind != "ip" || rep.Mode != "redirect" {
+		t.Fatalf("report header: %+v", rep)
+	}
+	if len(rep.IPs) != 1 || rep.IPs[0].Verdict != "proxy" || rep.IPs[0].VerdictSource != "static" {
+		t.Fatalf("ips: %+v", rep.IPs)
+	}
+}
+
+func TestDiagTrace_BadTarget(t *testing.T) {
+	e := newEnv(t)
+	resp := e.bearer("POST", "/api/diag/trace", []byte(`{"target":"   "}`))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	readAll(t, resp)
+}

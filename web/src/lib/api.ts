@@ -13,6 +13,7 @@ import type {
   ListSource,
   UpdateStatus,
   UpdateStatusResp,
+  TraceReport,
 } from "./types";
 
 export class ApiError extends Error {
@@ -250,6 +251,11 @@ export const api = {
   // Kicks off a detached install; outcome arrives via updateStatus polling.
   updateApply(target: "singbox" | "ui"): Promise<{ target: string; started: boolean }> {
     return request("POST", "/api/update/apply", { target });
+  },
+
+  // --- route trace ---
+  diagTrace(target: string): Promise<TraceReport> {
+    return request("POST", "/api/diag/trace", { target });
   },
 
   // --- MTU probe / clamp ---
