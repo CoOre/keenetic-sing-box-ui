@@ -509,9 +509,10 @@ func parseConntrackLine(line string) (Flow, string, bool) {
 		switch k {
 		case "src":
 			nSrc++
-			if nSrc == 1 {
+			switch nSrc {
+			case 1:
 				origSrc = v
-			} else if nSrc == 2 {
+			case 2:
 				replySrc = v
 			}
 		case "dst":
