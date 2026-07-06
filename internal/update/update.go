@@ -57,6 +57,7 @@ type Manager struct {
 	SingBoxBin string // path to installed sing-box (current-version probe)
 	UIVersion  string // this binary's version (from ldflags)
 	UIInit     string // path to the UI's own init script (self-restart)
+	UIInitrc   string // fallback restart script (/opt/etc/initrc, install-router.sh setups)
 	BaseURL    string // GitHub API base override for tests; "" = api.github.com
 	Log        *slog.Logger
 
@@ -185,7 +186,7 @@ func (m *Manager) updateUI(ctx context.Context) (string, error) {
 	if err := m.install(ctx, m.UIGH, asset); err != nil {
 		return asset.Version, fmt.Errorf("install: %w", err)
 	}
-	if err := m.scheduleSelfRestart(); err != nil {
+	if err := m.ScheduleSelfRestart(); err != nil {
 		return asset.Version, fmt.Errorf("installed %s but restart failed: %w", asset.Version, err)
 	}
 	return asset.Version, nil
@@ -291,14 +292,26 @@ func (m *Manager) proxiedClient() *http.Client {
 	return &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
 }
 
-// scheduleSelfRestart spawns a detached shell that restarts this service via
+// ScheduleSelfRestart spawns a detached shell that restarts this service via
 // its init script after a short delay, so the HTTP response for the update
-// request is delivered before the process dies.
-func (m *Manager) scheduleSelfRestart() error {
-	if m.UIInit == "" || !fileExists(m.UIInit) {
-		return errors.New("ui init script not found: " + m.UIInit)
+// request is delivered before the process dies. Also used after a full-state
+// import, which replaces the UI config read at process start.
+//
+// Two install layouts exist: the packaged one has an init.d script (UIInit);
+// install-router.sh setups instead (re)start the UI from /opt/etc/initrc,
+// which kills any previous instance before launching — so re-running it acts
+// as a restart.
+func (m *Manager) ScheduleSelfRestart() error {
+	script := ""
+	switch {
+	case m.UIInit != "" && fileExists(m.UIInit):
+		script = m.UIInit + " restart"
+	case m.UIInitrc != "" && fileExists(m.UIInitrc):
+		script = m.UIInitrc
+	default:
+		return errors.New("no restart script found (tried " + m.UIInit + ", " + m.UIInitrc + ")")
 	}
-	cmd := exec.Command("/bin/sh", "-c", "sleep 1; sh "+m.UIInit+" restart >/dev/null 2>&1")
+	cmd := exec.Command("/bin/sh", "-c", "sleep 1; sh "+script+" >/dev/null 2>&1")
 	// New session: survives this process's death and isn't killed by the init
 	// script's own procname-based kill.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

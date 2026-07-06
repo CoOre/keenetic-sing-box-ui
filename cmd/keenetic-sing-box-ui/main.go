@@ -20,6 +20,7 @@ import (
 
 	"github.com/CoOre/keenetic-sing-box-ui/internal/api"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/auth"
+	"github.com/CoOre/keenetic-sing-box-ui/internal/backup"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/cmdrun"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/config"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/lists"
@@ -272,6 +273,18 @@ func runServer(args []string) int {
 		Firewall:    &transparent.Engine{Runner: cmdrun.OS{}, Log: logger, Bin: selfPath()},
 		Lists:       lists.NewStore(filepath.Join(filepath.Dir(*cfgPath), "lists.json")),
 	}
+	// Full-state export/import: one archive with the sing-box config plus all
+	// UI stores, enough to restore a wiped router in one upload.
+	deps.Backup = &backup.Manager{
+		UIConfigPath:      *cfgPath,
+		ServersPath:       deps.Servers.Path,
+		SettingsPath:      deps.Settings.Path,
+		ListsPath:         deps.Lists.Path,
+		TLSCertPath:       uiCfg.TLSCertPath,
+		TLSKeyPath:        uiCfg.TLSKeyPath,
+		SingBoxConfigPath: paths.SingBoxConfig,
+		UIVersion:         version,
+	}
 	// List runner: fetches URL sources on schedule and caches results.
 	// No auto-restart of sing-box — lists are applied at the next manual
 	// "Apply & Restart" click. Auto-restart was too heavy for the router's RAM.
@@ -301,6 +314,7 @@ func runServer(args []string) int {
 		SingBoxBin: paths.SingBoxBin,
 		UIVersion:  version,
 		UIInit:     paths.UIInit,
+		UIInitrc:   filepath.Join(paths.Opt, "etc", "initrc"),
 		Log:        logger,
 	}
 

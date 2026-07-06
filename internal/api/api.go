@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/CoOre/keenetic-sing-box-ui/internal/auth"
+	"github.com/CoOre/keenetic-sing-box-ui/internal/backup"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/clash"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/cmdrun"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/config"
@@ -49,6 +50,7 @@ type Deps struct {
 	ListRunner  *lists.Runner
 	Resolver    *resolve.Resolver
 	Update      *update.Manager
+	Backup      *backup.Manager
 }
 
 // Register mounts all /api/* routes on mux behind RequireAuth + RequireCSRF.
@@ -94,6 +96,11 @@ func Register(mux *http.ServeMux, a *auth.Authenticator, d *Deps) {
 		mux.Handle("GET /api/update/status", protect(http.HandlerFunc(h.updateStatus)))
 		mux.Handle("POST /api/update/check", protect(http.HandlerFunc(h.updateCheck)))
 		mux.Handle("POST /api/update/apply", protect(http.HandlerFunc(h.updateApply)))
+	}
+
+	if d.Backup != nil {
+		mux.Handle("GET /api/backup/export", protect(http.HandlerFunc(h.backupExport)))
+		mux.Handle("POST /api/backup/import", protect(http.HandlerFunc(h.backupImport)))
 	}
 
 	mux.Handle("GET /api/transparent/policies", protect(http.HandlerFunc(h.transparentPolicies)))
@@ -472,6 +479,55 @@ func (h *handlers) configBackupRead(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(body)
+}
+
+// backupExport streams a tar.gz archive of the full state: sing-box config +
+// the UI's own stores (credentials, servers, settings, lists, TLS keypair).
+// The archive contains secrets — it is served only behind auth, like
+// everything else under /api.
+func (h *handlers) backupExport(w http.ResponseWriter, r *http.Request) {
+	name := "keenetic-sing-box-backup-" + time.Now().UTC().Format("20060102-150405") + ".tar.gz"
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	// Errors past this point can't change the response status; the client
+	// sees a truncated download instead.
+	_ = h.d.Backup.Export(w)
+}
+
+type backupImportResp struct {
+	backup.Result
+	SingBoxRestarted bool `json:"singbox_restarted"`
+	UIRestarting     bool `json:"ui_restarting"`
+}
+
+// backupImport restores a previously exported archive: validates and writes
+// the files, restarts sing-box on the imported config, re-syncs the firewall,
+// and — when the UI's own config was in the archive — schedules a detached
+// self-restart so the imported credentials/listeners take effect.
+func (h *handlers) backupImport(w http.ResponseWriter, r *http.Request) {
+	res, err := h.d.Backup.Import(http.MaxBytesReader(w, r.Body, 33<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	resp := backupImportResp{Result: res}
+
+	// Apply the imported sing-box config: restart the service if installed,
+	// then re-drive the firewall from the imported settings (mode/ports/CIDRs
+	// may all have changed).
+	if _, statErr := os.Stat(h.d.Paths.SingBoxBin); statErr == nil {
+		if _, rerr := h.d.Service.Do(r.Context(), singbox.ActionRestart); rerr == nil {
+			resp.SingBoxRestarted = true
+		}
+	}
+	h.syncFirewall(r.Context(), "restart")
+
+	if res.UIRestartNeeded && h.d.Update != nil {
+		if rerr := h.d.Update.ScheduleSelfRestart(); rerr == nil {
+			resp.UIRestarting = true
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *handlers) diagNet(w http.ResponseWriter, r *http.Request) {

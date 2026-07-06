@@ -15,6 +15,7 @@ import type {
   UpdateStatus,
   UpdateStatusResp,
   TraceReport,
+  FullBackupResult,
 } from "./types";
 
 export class ApiError extends Error {
@@ -262,6 +263,50 @@ export const api = {
   // Kicks off a detached install; outcome arrives via updateStatus polling.
   updateApply(target: "singbox" | "ui"): Promise<{ target: string; started: boolean }> {
     return request("POST", "/api/update/apply", { target });
+  },
+
+  // --- full backup ---
+  // Downloads the full-state archive via fetch (so auth/errors are handled)
+  // and hands it to the browser as a file download.
+  async backupExport(): Promise<void> {
+    const resp = await fetch("/api/backup/export", { credentials: "same-origin" });
+    if (!resp.ok) {
+      throw new ApiError(resp.status, (await resp.text()) || resp.statusText);
+    }
+    const blob = await resp.blob();
+    const cd = resp.headers.get("content-disposition") ?? "";
+    const name = /filename="([^"]+)"/.exec(cd)?.[1] ?? "keenetic-sing-box-backup.tar.gz";
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  },
+  async backupImport(file: File): Promise<FullBackupResult> {
+    const headers: Record<string, string> = { "Content-Type": "application/gzip" };
+    const csrf = readCookie(CSRF_COOKIE);
+    if (csrf) headers["X-CSRF-Token"] = csrf;
+    const resp = await fetch("/api/backup/import", {
+      method: "POST",
+      credentials: "same-origin",
+      headers,
+      body: file,
+    });
+    const text = await resp.text();
+    let data: unknown = text;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      /* leave as text */
+    }
+    if (!resp.ok) {
+      const msg =
+        data && typeof data === "object" && "error" in data
+          ? String((data as { error: unknown }).error)
+          : text || resp.statusText;
+      throw new ApiError(resp.status, msg);
+    }
+    return data as FullBackupResult;
   },
 
   // --- route trace ---

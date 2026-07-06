@@ -252,3 +252,14 @@ export interface TraceReport {
   conntrack_error?: string;
   outbound?: { selector: string; now?: string; error?: string };
 }
+
+// --- full backup (/api/backup/*) ---
+
+export interface FullBackupResult {
+  meta: { format: number; ui_version?: string; created_at: string };
+  restored: string[];
+  skipped?: string[];
+  ui_restart_needed: boolean;
+  singbox_restarted: boolean;
+  ui_restarting: boolean;
+}

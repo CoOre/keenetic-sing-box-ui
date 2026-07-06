@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/CoOre/keenetic-sing-box-ui/internal/auth"
+	"github.com/CoOre/keenetic-sing-box-ui/internal/backup"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/cmdrun"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/config"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/servers"
@@ -58,6 +59,16 @@ func newEnv(t *testing.T) *testEnv {
 		LogPath:  paths.SingBoxLog,
 		Servers:  servers.NewStore(filepath.Join(root, "servers.json")),
 		Settings: settings.NewStore(filepath.Join(root, "singbox-settings.json")),
+	}
+	deps.Backup = &backup.Manager{
+		UIConfigPath:      filepath.Join(root, "ui-config.json"),
+		ServersPath:       deps.Servers.Path,
+		SettingsPath:      deps.Settings.Path,
+		ListsPath:         filepath.Join(root, "lists.json"),
+		TLSCertPath:       filepath.Join(root, "tls", "cert.pem"),
+		TLSKeyPath:        filepath.Join(root, "tls", "key.pem"),
+		SingBoxConfigPath: paths.SingBoxConfig,
+		UIVersion:         "test",
 	}
 	authn := auth.NewAuthenticator(tokenForTest, auth.NewSessionStore(time.Hour))
 

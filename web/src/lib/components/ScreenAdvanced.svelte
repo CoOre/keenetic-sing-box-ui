@@ -110,6 +110,68 @@
     if (n < 1024) return `${n} B`;
     return `${(n / 1024).toFixed(1)} KB`;
   }
+
+  // --- full state export/import ---
+  let fullBusy = $state("");
+  let fullNotice = $state("");
+  let fullError = $state("");
+  let importFile = $state<File | null>(null);
+  let restartWait = $state(false);
+  let fileInput: HTMLInputElement;
+
+  async function exportFull() {
+    fullBusy = "export"; fullNotice = ""; fullError = "";
+    try {
+      await api.backupExport();
+      fullNotice = "Архив скачан.";
+    } catch (e) {
+      fullError = e instanceof Error ? e.message : String(e);
+    } finally { fullBusy = ""; }
+  }
+
+  function pickImport(e: Event) {
+    const f = (e.target as HTMLInputElement).files?.[0] ?? null;
+    if (f) importFile = f; // открывает модалку подтверждения
+  }
+
+  async function importFull() {
+    if (!importFile) return;
+    const f = importFile;
+    importFile = null;
+    fullBusy = "import"; fullNotice = ""; fullError = "";
+    try {
+      const res = await api.backupImport(f);
+      const n = res.restored.length;
+      fullNotice = `Восстановлено файлов: ${n}.`;
+      if (res.singbox_restarted) fullNotice += " sing-box перезапущен.";
+      if (res.ui_restarting) {
+        fullNotice += " Интерфейс перезапускается — страница перезагрузится, войдите с паролем из бэкапа.";
+        restartWait = true;
+        await waitUIBack();
+        location.reload();
+        return;
+      }
+      load();
+    } catch (e) {
+      fullError = e instanceof Error ? e.message : String(e);
+    } finally {
+      fullBusy = "";
+      if (fileInput) fileInput.value = "";
+    }
+  }
+
+  // Ждём, пока UI-процесс перезапустится: сначала даём ему умереть, затем
+  // опрашиваем /healthz до первого успешного ответа.
+  async function waitUIBack() {
+    await new Promise((r) => setTimeout(r, 3000));
+    for (let i = 0; i < 40; i++) {
+      try {
+        const resp = await fetch("/healthz", { cache: "no-store" });
+        if (resp.ok) return;
+      } catch { /* ещё не поднялся */ }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
 </script>
 
 <div class="page wide stack">
@@ -220,6 +282,73 @@
             </button>
           </div>
         {/each}
+      </div>
+    </div>
+  {/if}
+
+  <!-- Full state export/import -->
+  <div class="card">
+    <div class="card-head">
+      <h3 class="card-title"><Icon name="database" size={17} />Полный бэкап</h3>
+      <div class="card-head-actions">
+        <p class="card-sub" style="margin:0">Всё состояние одним архивом</p>
+      </div>
+    </div>
+    <div class="card-body stack-sm">
+      <p class="hint-text">
+        Архив содержит конфиг sing-box, серверы, настройки маршрутизации, списки,
+        TLS-сертификат и учётные данные интерфейса (токен и пароль). Достаточно,
+        чтобы восстановить всё на чистом роутере. Храните файл в надёжном месте —
+        внутри секреты.
+      </p>
+      {#if fullNotice}
+        <p class="hint-text" style="color:var(--ok-text)">
+          {#if restartWait}<span class="btn-spinner" style="margin-right:6px"></span>{/if}
+          {fullNotice}
+        </p>
+      {/if}
+      {#if fullError}
+        <div class="callout err"><Icon name="alert" size={17} /><div class="callout-body">{fullError}</div></div>
+      {/if}
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn sm" disabled={!!fullBusy} onclick={exportFull}>
+          {#if fullBusy === "export"}<span class="btn-spinner"></span>{:else}<Icon name="download" size={14} />{/if}
+          Экспортировать архив
+        </button>
+        <button class="btn sm" disabled={!!fullBusy} onclick={() => fileInput.click()}>
+          {#if fullBusy === "import"}<span class="btn-spinner"></span>{:else}<Icon name="upload" size={14} />{/if}
+          Импортировать архив…
+        </button>
+        <input
+          type="file"
+          accept=".tar.gz,.tgz,application/gzip"
+          style="display:none"
+          bind:this={fileInput}
+          onchange={pickImport}
+        />
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm full import -->
+  {#if importFile}
+    <div class="modal-scrim" onmousedown={(e) => { if (e.target === e.currentTarget) importFile = null; }}>
+      <div class="modal">
+        <div class="modal-head">
+          <div class="modal-icon danger"><Icon name="alert" size={19} /></div>
+          <div style="flex:1;padding-top:2px">
+            <h3>Импортировать бэкап?</h3>
+            <p>
+              Файл <span class="mono">{importFile.name}</span> перезапишет текущие
+              серверы, настройки, списки, конфиг sing-box и пароль интерфейса.
+              sing-box и интерфейс будут перезапущены.
+            </p>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn ghost" onclick={() => { importFile = null; if (fileInput) fileInput.value = ""; }}>Отмена</button>
+          <button class="btn danger solid" onclick={importFull}>Импортировать и перезаписать</button>
+        </div>
       </div>
     </div>
   {/if}
