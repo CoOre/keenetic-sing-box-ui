@@ -10,6 +10,7 @@ const (
 	TypeTrojan      = "trojan"
 	TypeShadowsocks = "shadowsocks"
 	TypeVMess       = "vmess"
+	TypeHysteria2   = "hysteria2"
 )
 
 // Server is a flattened, form-friendly representation of a single proxy
@@ -23,7 +24,7 @@ type Server struct {
 
 	// Credentials
 	UUID     string `json:"uuid,omitempty"`     // vless, vmess
-	Password string `json:"password,omitempty"` // trojan, shadowsocks
+	Password string `json:"password,omitempty"` // trojan, shadowsocks, hysteria2 (auth)
 	Method   string `json:"method,omitempty"`   // shadowsocks
 	AlterID  int    `json:"alter_id,omitempty"` // vmess
 	Flow     string `json:"flow,omitempty"`     // vless
@@ -44,6 +45,13 @@ type Server struct {
 	WSPath      string `json:"ws_path,omitempty"`
 	WSHost      string `json:"ws_host,omitempty"`
 	GRPCService string `json:"grpc_service_name,omitempty"`
+
+	// Hysteria 2
+	ServerPorts  []string `json:"server_ports,omitempty"` // port-hopping ranges, sing-box form "20000:30000"
+	HopInterval  string   `json:"hop_interval,omitempty"` // e.g. "30s"
+	UpMbps       int      `json:"up_mbps,omitempty"`      // 0 = BBR
+	DownMbps     int      `json:"down_mbps,omitempty"`
+	ObfsPassword string   `json:"obfs_password,omitempty"` // salamander obfs when set
 }
 
 // ToOutbound builds a sing-box outbound object for this server, using the
@@ -58,6 +66,8 @@ func (s *Server) ToOutbound(tag string) map[string]any {
 		return s.shadowsocksOutbound(tag)
 	case TypeVMess:
 		return s.vmessOutbound(tag)
+	case TypeHysteria2:
+		return s.hysteria2Outbound(tag)
 	default:
 		return nil
 	}
@@ -139,11 +149,40 @@ func (s *Server) vmessOutbound(tag string) map[string]any {
 	return o
 }
 
-// tlsBlock builds the sing-box "tls" object, or nil if TLS is disabled.
-func (s *Server) tlsBlock() map[string]any {
-	if !s.TLS {
-		return nil
+// hysteria2Outbound builds a QUIC-based outbound: TLS is mandatory and there
+// is no uTLS/REALITY, transport or multiplex.
+func (s *Server) hysteria2Outbound(tag string) map[string]any {
+	o := map[string]any{
+		"type":     TypeHysteria2,
+		"tag":      tag,
+		"server":   s.Server,
+		"password": s.Password,
+		"tls":      s.quicTLSBlock(),
 	}
+	if s.ServerPort > 0 {
+		o["server_port"] = s.ServerPort
+	}
+	if len(s.ServerPorts) > 0 {
+		o["server_ports"] = s.ServerPorts
+		if s.HopInterval != "" {
+			o["hop_interval"] = s.HopInterval
+		}
+	}
+	if s.UpMbps > 0 {
+		o["up_mbps"] = s.UpMbps
+	}
+	if s.DownMbps > 0 {
+		o["down_mbps"] = s.DownMbps
+	}
+	if s.ObfsPassword != "" {
+		o["obfs"] = map[string]any{"type": "salamander", "password": s.ObfsPassword}
+	}
+	return o
+}
+
+// quicTLSBlock is the always-enabled TLS object without uTLS/REALITY, which
+// QUIC-based protocols don't support.
+func (s *Server) quicTLSBlock() map[string]any {
 	tls := map[string]any{"enabled": true}
 	if s.SNI != "" {
 		tls["server_name"] = s.SNI
@@ -154,6 +193,15 @@ func (s *Server) tlsBlock() map[string]any {
 	if s.Insecure {
 		tls["insecure"] = true
 	}
+	return tls
+}
+
+// tlsBlock builds the sing-box "tls" object, or nil if TLS is disabled.
+func (s *Server) tlsBlock() map[string]any {
+	if !s.TLS {
+		return nil
+	}
+	tls := s.quicTLSBlock()
 	if s.Fingerprint != "" {
 		tls["utls"] = map[string]any{"enabled": true, "fingerprint": s.Fingerprint}
 	}

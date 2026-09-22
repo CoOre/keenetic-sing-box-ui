@@ -8,6 +8,8 @@ import type {
   ClashConnectionsSnapshot,
   BackupMeta,
   Server,
+  ServersState,
+  ServerPrimaryResult,
   ServersApplyResult,
   SingboxSettings,
   KeeneticPolicy,
@@ -175,6 +177,14 @@ export const api = {
   async serverList(): Promise<Server[]> {
     const r = await request<{ servers: Server[] }>("GET", "/api/servers");
     return r.servers ?? [];
+  },
+  async serverState(): Promise<ServersState> {
+    const r = await request<ServersState>("GET", "/api/servers");
+    return { ...r, servers: r.servers ?? [] };
+  },
+  // id "" = auto (fastest) mode, or the sole server.
+  serverSetPrimary(id: string): Promise<ServerPrimaryResult> {
+    return request("POST", "/api/servers/primary", { id });
   },
   serverSave(s: Server): Promise<Server> {
     return request("POST", "/api/servers", s);

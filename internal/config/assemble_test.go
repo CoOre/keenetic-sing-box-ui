@@ -251,3 +251,62 @@ func TestAssemble_MultipleServers_AddsAuto(t *testing.T) {
 		t.Error("expected urltest 'auto' outbound for multiple servers")
 	}
 }
+
+func TestAssemble_MultiplexSkipsHysteria2(t *testing.T) {
+	vless := map[string]any{"type": "vless", "server": "1.2.3.4", "server_port": 443, "uuid": "u"}
+	hy2 := map[string]any{"type": "hysteria2", "server": "5.6.7.8", "server_port": 443, "password": "p"}
+	body, err := Assemble(AssembleOptions{InboundMode: InboundTun, Multiplex: true},
+		[]ProxyOutbound{{Tag: "v", Object: vless}, {Tag: "h", Object: hy2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(body, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range cfg["outbounds"].([]any) {
+		m := o.(map[string]any)
+		_, hasMux := m["multiplex"]
+		switch m["tag"] {
+		case "v":
+			if !hasMux {
+				t.Error("vless: multiplex missing")
+			}
+		case "h":
+			if hasMux {
+				t.Error("hysteria2: multiplex must not be set")
+			}
+		}
+	}
+}
+
+func TestAssemble_DefaultOutbound(t *testing.T) {
+	mk := func() []ProxyOutbound {
+		return []ProxyOutbound{
+			{Tag: "a", Object: map[string]any{"type": "vless", "server": "1.1.1.1", "server_port": 443, "uuid": "u"}},
+			{Tag: "b", Object: map[string]any{"type": "vless", "server": "2.2.2.2", "server_port": 443, "uuid": "u"}},
+		}
+	}
+	selDefault := func(opts AssembleOptions) any {
+		body, err := Assemble(opts, mk())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfg map[string]any
+		if err := json.Unmarshal(body, &cfg); err != nil {
+			t.Fatal(err)
+		}
+		for _, o := range cfg["outbounds"].([]any) {
+			if m := o.(map[string]any); m["tag"] == OutboundProxyTag {
+				return m["default"]
+			}
+		}
+		return nil
+	}
+	if d := selDefault(AssembleOptions{InboundMode: InboundTun, DefaultOutbound: "b"}); d != "b" {
+		t.Errorf("primary default = %v, want b", d)
+	}
+	if d := selDefault(AssembleOptions{InboundMode: InboundTun, DefaultOutbound: "gone"}); d != OutboundAutoTag {
+		t.Errorf("unknown primary default = %v, want auto", d)
+	}
+}

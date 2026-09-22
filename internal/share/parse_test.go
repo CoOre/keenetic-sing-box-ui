@@ -140,3 +140,111 @@ func TestParseLink_Unsupported(t *testing.T) {
 		t.Error("expected error for unsupported scheme")
 	}
 }
+
+func TestParseHysteria2_ObfsHopping(t *testing.T) {
+	link := "hysteria2://letmein@example.com:443,20000-30000/?sni=real.example.com&insecure=1" +
+		"&obfs=salamander&obfs-password=gawr&upmbps=50&downmbps=200#HY%202"
+	s, err := ParseLink(link)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if s.Type != TypeHysteria2 || s.Server != "example.com" || s.ServerPort != 443 || s.Password != "letmein" {
+		t.Errorf("basics: %+v", s)
+	}
+	if len(s.ServerPorts) != 1 || s.ServerPorts[0] != "20000:30000" {
+		t.Errorf("ports: %v", s.ServerPorts)
+	}
+	if s.SNI != "real.example.com" || !s.Insecure || s.ObfsPassword != "gawr" || s.Name != "HY 2" {
+		t.Errorf("params: %+v", s)
+	}
+	if s.UpMbps != 50 || s.DownMbps != 200 {
+		t.Errorf("mbps: %d/%d", s.UpMbps, s.DownMbps)
+	}
+
+	out := s.ToOutbound("proxy")
+	if out["type"] != "hysteria2" || out["password"] != "letmein" || out["up_mbps"] != 50 {
+		t.Errorf("outbound: %+v", out)
+	}
+	if ports := out["server_ports"].([]string); ports[0] != "20000:30000" {
+		t.Errorf("server_ports: %v", ports)
+	}
+	obfs := out["obfs"].(map[string]any)
+	if obfs["type"] != "salamander" || obfs["password"] != "gawr" {
+		t.Errorf("obfs: %+v", obfs)
+	}
+	tls := out["tls"].(map[string]any)
+	if tls["enabled"] != true || tls["server_name"] != "real.example.com" || tls["insecure"] != true {
+		t.Errorf("tls: %+v", tls)
+	}
+	if _, ok := tls["utls"]; ok {
+		t.Error("hysteria2 tls must not carry utls")
+	}
+	for _, k := range []string{"transport", "multiplex", "packet_encoding"} {
+		if _, ok := out[k]; ok {
+			t.Errorf("unexpected %q in hysteria2 outbound", k)
+		}
+	}
+}
+
+func TestParseHysteria2_AliasIPv6UserPass(t *testing.T) {
+	s, err := ParseLink("hy2://user:p%40ss@[2001:db8::1]:8443?mport=10000-11000")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if s.Server != "2001:db8::1" || s.ServerPort != 8443 || s.Password != "user:p@ss" {
+		t.Errorf("basics: %+v", s)
+	}
+	if len(s.ServerPorts) != 1 || s.ServerPorts[0] != "10000:11000" {
+		t.Errorf("ports: %v", s.ServerPorts)
+	}
+	if out := s.ToOutbound("p"); out["obfs"] != nil {
+		t.Errorf("obfs should be absent: %+v", out)
+	}
+}
+
+func TestParseHysteria2_DefaultPortAndErrors(t *testing.T) {
+	s, err := ParseLink("hy2://secret@host.example")
+	if err != nil || s.ServerPort != 443 {
+		t.Fatalf("default port: %+v %v", s, err)
+	}
+	for _, bad := range []string{
+		"hy2://@host:443",
+		"hy2://a@host:99999",
+		"hy2://a@host:443,30000-20000",
+		"hy2://a@host:443?obfs=xplus",
+	} {
+		if _, err := ParseLink(bad); err == nil {
+			t.Errorf("%s: expected error", bad)
+		}
+	}
+}
+
+func TestServerValidate(t *testing.T) {
+	ok := []Server{
+		{Type: TypeVLESS, Server: "h", ServerPort: 443, UUID: "u"},
+		{Type: TypeShadowsocks, Server: "h", ServerPort: 8388, Method: "aes-128-gcm", Password: "p"},
+		{Type: TypeHysteria2, Server: "h", Password: "p", ServerPorts: []string{"20000:30000"}},
+	}
+	for _, s := range ok {
+		if err := s.Validate(); err != nil {
+			t.Errorf("%+v: %v", s, err)
+		}
+	}
+	bad := []Server{
+		{Type: TypeVLESS, Server: "h", ServerPort: 443},
+		{Type: TypeTrojan, Server: " ", ServerPort: 443, Password: "p"},
+		{Type: TypeShadowsocks, Server: "h", ServerPort: 1, Password: "p"},
+		{Type: TypeHysteria2, Server: "h", Password: "p"},
+		{Type: TypeHysteria2, Server: "h", ServerPort: 443, Password: "p", ServerPorts: []string{"20000-30000"}},
+		{Type: "wireguard", Server: "h", ServerPort: 1},
+	}
+	for _, s := range bad {
+		if err := s.Validate(); err == nil {
+			t.Errorf("%+v: expected error", s)
+		}
+	}
+	r := Server{Type: TypeVLESS, Server: "h", ServerPort: 1, UUID: "u", TLS: true, PublicKey: " "}
+	if err := r.Validate(); err != nil || r.PublicKey != "" {
+		t.Errorf("public_key not trimmed: %q %v", r.PublicKey, err)
+	}
+}

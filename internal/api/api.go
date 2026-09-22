@@ -85,6 +85,7 @@ func Register(mux *http.ServeMux, a *auth.Authenticator, d *Deps) {
 		mux.Handle("POST /api/servers", protect(http.HandlerFunc(h.serversSave)))
 		mux.Handle("DELETE /api/servers/{id}", protect(http.HandlerFunc(h.serversDelete)))
 		mux.Handle("POST /api/servers/apply", protect(http.HandlerFunc(h.serversApply)))
+		mux.Handle("POST /api/servers/primary", protect(http.HandlerFunc(h.serversPrimary)))
 	}
 
 	if d.Settings != nil {
@@ -788,10 +789,127 @@ func (h *handlers) serversList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	if list == nil {
-		list = []servers.Entry{}
+	tags := servers.UniqueTags(list)
+	views := make([]serverView, len(list))
+	for i, e := range list {
+		views[i] = serverView{Entry: e, Tag: tags[i]}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"servers": list})
+	resp := serversListResp{Servers: views}
+	// Live selector state is best-effort: sing-box may be stopped.
+	if c := h.clashClient(); c != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
+		defer cancel()
+		if now, err := c.Now(ctx, config.OutboundProxyTag); err == nil {
+			resp.Selected = now
+			if now == config.OutboundAutoTag {
+				resp.AutoNow, _ = c.Now(ctx, config.OutboundAutoTag)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// serverView is a stored entry plus its outbound tag in the generated config,
+// so the UI can match it against the live selector state.
+type serverView struct {
+	servers.Entry
+	Tag string `json:"tag"`
+}
+
+type serversListResp struct {
+	Servers []serverView `json:"servers"`
+	// Selected is where the "proxy" selector points right now (a server tag,
+	// "auto" or "direct"); empty when sing-box/Clash API is unreachable.
+	Selected string `json:"selected,omitempty"`
+	// AutoNow is the server urltest picked, when Selected is "auto".
+	AutoNow string `json:"auto_now,omitempty"`
+}
+
+// clashClient returns a direct Clash API client, or nil if none is configured.
+func (h *handlers) clashClient() *clash.Client {
+	if h.d.ClashAddr == "" {
+		return nil
+	}
+	return &clash.Client{Addr: h.d.ClashAddr, Secret: h.d.ClashSecret}
+}
+
+type serversPrimaryReq struct {
+	ID string `json:"id"` // empty = auto (fastest), or the sole server
+}
+
+type serversPrimaryResp struct {
+	Selected  string `json:"selected"`
+	Live      bool   `json:"live"`
+	LiveError string `json:"live_error,omitempty"`
+}
+
+// serversPrimary marks a server as primary (or clears it for auto mode) and
+// switches the running "proxy" selector to it right away. The flag is also
+// what serversApply uses as the selector default, and re-asserts after a
+// restart, since sing-box's cache_file would otherwise restore the old pick.
+func (h *handlers) serversPrimary(w http.ResponseWriter, r *http.Request) {
+	var req serversPrimaryReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := h.d.Servers.SetPrimary(req.ID); err != nil {
+		code := http.StatusInternalServerError
+		if errors.Is(err, servers.ErrNotFound) {
+			code = http.StatusNotFound
+		}
+		writeErr(w, code, err)
+		return
+	}
+	list, err := h.d.Servers.List()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	tags := servers.UniqueTags(list)
+	target := servers.PrimaryTag(list, tags)
+	if target == "" {
+		switch {
+		case len(tags) > 1:
+			target = config.OutboundAutoTag
+		case len(tags) == 1:
+			target = tags[0]
+		default:
+			writeErr(w, http.StatusBadRequest, errors.New("нет серверов"))
+			return
+		}
+	}
+	resp := serversPrimaryResp{Selected: target}
+	if c := h.clashClient(); c == nil {
+		resp.LiveError = "Clash API не настроен"
+	} else if err := c.Select(r.Context(), config.OutboundProxyTag, target); err != nil {
+		// Typically: sing-box stopped, or the server isn't applied yet.
+		resp.LiveError = err.Error()
+	} else {
+		resp.Live = true
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// reassertPrimary points the "proxy" selector back at the primary server after
+// a restart. sing-box restores the last pick from cache_file over the config's
+// default, so without this a primary chosen before Apply would be lost. The
+// Clash API comes up a moment after the restart, hence the retries.
+func (h *handlers) reassertPrimary(ctx context.Context, tag string) {
+	c := h.clashClient()
+	if c == nil || tag == "" {
+		return
+	}
+	for range 20 {
+		if err := c.Select(ctx, config.OutboundProxyTag, tag); err == nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 func (h *handlers) serversSave(w http.ResponseWriter, r *http.Request) {
@@ -800,8 +918,8 @@ func (h *handlers) serversSave(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if e.Server.Server == "" || e.Server.Type == "" {
-		writeErr(w, http.StatusBadRequest, errors.New("server and type are required"))
+	if err := e.Server.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	saved, err := h.d.Servers.Save(e)
@@ -871,6 +989,7 @@ func (h *handlers) serversApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tags := servers.UniqueTags(list)
+	primaryTag := servers.PrimaryTag(list, tags)
 	outs := make([]config.ProxyOutbound, 0, len(list))
 	for i, e := range list {
 		obj := e.Server.ToOutbound(tags[i])
@@ -908,6 +1027,7 @@ func (h *handlers) serversApply(w http.ResponseWriter, r *http.Request) {
 		ExtraRouteDomains: listDomains, // from URL lists, domain_suffix trie
 		ExtraRouteCIDR:    listCIDRs,   // from URL lists, Patricia trie (~2 MB per 1000)
 		Multiplex:         st.Multiplex,
+		DefaultOutbound:   primaryTag,
 	}, outs)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -941,6 +1061,9 @@ func (h *handlers) serversApply(w http.ResponseWriter, r *http.Request) {
 		if rerr != nil {
 			// Surface but don't fail the whole apply — config is already written.
 			resp.Check.Stderr = rerr.Error()
+		} else if primaryTag != "" {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
+			go func() { defer cancel(); h.reassertPrimary(ctx, primaryTag) }()
 		}
 	}
 

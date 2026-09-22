@@ -19,9 +19,12 @@ import (
 	"github.com/CoOre/keenetic-sing-box-ui/internal/share"
 )
 
-// Entry is a stored server: a share.Server plus a stable ID.
+// Entry is a stored server: a share.Server plus a stable ID. Primary marks
+// the server the "proxy" selector should point at; at most one entry has it,
+// and none means "auto" (fastest by urltest).
 type Entry struct {
-	ID string `json:"id"`
+	ID      string `json:"id"`
+	Primary bool   `json:"primary,omitempty"`
 	share.Server
 }
 
@@ -69,7 +72,8 @@ func (s *Store) List() ([]Entry, error) {
 }
 
 // Save adds a new entry (when ID is empty) or replaces an existing one by ID.
-// Returns the stored entry (with its ID).
+// Returns the stored entry (with its ID). The Primary flag is owned by
+// SetPrimary: it is kept from the stored entry, never taken from e.
 func (s *Store) Save(e Entry) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -77,6 +81,7 @@ func (s *Store) Save(e Entry) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
+	e.Primary = false
 	if e.ID == "" {
 		e.ID = newID()
 		list = append(list, e)
@@ -84,6 +89,7 @@ func (s *Store) Save(e Entry) (Entry, error) {
 		replaced := false
 		for i := range list {
 			if list[i].ID == e.ID {
+				e.Primary = list[i].Primary
 				list[i] = e
 				replaced = true
 				break
@@ -113,6 +119,40 @@ func (s *Store) Delete(id string) error {
 		}
 	}
 	return s.save(out)
+}
+
+// ErrNotFound is returned by SetPrimary for an unknown ID.
+var ErrNotFound = errors.New("server not found")
+
+// SetPrimary marks the entry with the given ID as primary and clears the flag
+// on all others. An empty id clears it everywhere (auto mode).
+func (s *Store) SetPrimary(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, err := s.load()
+	if err != nil {
+		return err
+	}
+	found := id == ""
+	for i := range list {
+		list[i].Primary = list[i].ID == id && id != ""
+		found = found || list[i].Primary
+	}
+	if !found {
+		return ErrNotFound
+	}
+	return s.save(list)
+}
+
+// PrimaryTag returns the outbound tag of the primary entry among list (tags
+// as produced by UniqueTags), or "" when none is marked.
+func PrimaryTag(list []Entry, tags []string) string {
+	for i, e := range list {
+		if e.Primary && i < len(tags) {
+			return tags[i]
+		}
+	}
+	return ""
 }
 
 var tagSanitize = regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)

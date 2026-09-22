@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -504,4 +505,79 @@ func TestDiagTrace_BadTarget(t *testing.T) {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 	readAll(t, resp)
+}
+
+// fakeClash is a minimal Clash API: GET/PUT /proxies/{name} for selectors.
+type fakeClash struct {
+	mu  sync.Mutex
+	now map[string]string
+}
+
+func (f *fakeClash) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	name := strings.TrimPrefix(r.URL.Path, "/proxies/")
+	switch r.Method {
+	case http.MethodGet:
+		_ = json.NewEncoder(w).Encode(map[string]string{"now": f.now[name]})
+	case http.MethodPut:
+		var body struct{ Name string }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.now[name] = body.Name
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func TestServers_Primary(t *testing.T) {
+	e := newEnv(t)
+	fc := &fakeClash{now: map[string]string{"proxy": "direct"}}
+	cs := httptest.NewServer(fc)
+	t.Cleanup(cs.Close)
+	e.deps.ClashAddr = cs.URL
+
+	var ids []string
+	for _, body := range []string{
+		`{"name":"A","type":"vless","server":"1.1.1.1","server_port":443,"uuid":"u"}`,
+		`{"name":"B","type":"hysteria2","server":"2.2.2.2","server_port":443,"password":"p"}`,
+	} {
+		resp := e.bearer(http.MethodPost, "/api/servers", []byte(body))
+		var saved servers.Entry
+		mustJSON(t, readAll(t, resp), &saved)
+		ids = append(ids, saved.ID)
+	}
+
+	resp := e.bearer(http.MethodPost, "/api/servers/primary", []byte(`{"id":"`+ids[1]+`"}`))
+	var pr serversPrimaryResp
+	mustJSON(t, readAll(t, resp), &pr)
+	if !pr.Live || pr.Selected != "B" || fc.now["proxy"] != "B" {
+		t.Fatalf("primary: %+v clash=%v", pr, fc.now)
+	}
+
+	resp = e.bearer(http.MethodGet, "/api/servers", nil)
+	var lr serversListResp
+	mustJSON(t, readAll(t, resp), &lr)
+	if lr.Selected != "B" || len(lr.Servers) != 2 || lr.Servers[1].Tag != "B" || !lr.Servers[1].Primary {
+		t.Fatalf("list: %+v", lr)
+	}
+
+	// Apply uses the primary as the selector default.
+	resp = e.bearer(http.MethodPost, "/api/servers/apply", []byte(`{"restart":false}`))
+	readAll(t, resp)
+	cfg, _ := e.deps.Config.Read()
+	if !strings.Contains(string(cfg), `"default": "B"`) && !strings.Contains(string(cfg), `"default":"B"`) {
+		t.Errorf("selector default not B: %s", cfg)
+	}
+
+	// Auto: clears the flag, selects urltest group.
+	resp = e.bearer(http.MethodPost, "/api/servers/primary", []byte(`{"id":""}`))
+	mustJSON(t, readAll(t, resp), &pr)
+	if pr.Selected != "auto" || fc.now["proxy"] != "auto" {
+		t.Fatalf("auto: %+v clash=%v", pr, fc.now)
+	}
+
+	resp = e.bearer(http.MethodPost, "/api/servers/primary", []byte(`{"id":"missing"}`))
+	readAll(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown id status %d", resp.StatusCode)
+	}
 }

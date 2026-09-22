@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 )
 
 // Inbound modes for an assembled router config.
@@ -50,6 +51,9 @@ type AssembleOptions struct {
 	// Combined with RouteCIDR at assembly time.
 	ExtraRouteCIDR []string
 
+	// DefaultOutbound, when it names one of the servers, is the proxy
+	// selector's default instead of auto/the sole server.
+	DefaultOutbound string
 	// Multiplex enables h2mux on the proxy server outbounds (see settings.Multiplex).
 	Multiplex bool
 }
@@ -112,7 +116,9 @@ func Assemble(opts AssembleOptions, servers []ProxyOutbound) ([]byte, error) {
 		if tag == "" {
 			continue
 		}
-		if opts.Multiplex {
+		// hysteria2 is QUIC and has no multiplex field; sing-box check would
+		// reject it.
+		if opts.Multiplex && obj["type"] != "hysteria2" {
 			// Collapse many short-lived proxy connections (e.g. Telegram's DC
 			// fan-out) onto a few persistent tunnels, removing the per-connection
 			// TLS handshake through the proxy chain. Server must accept sing-box mux.
@@ -142,7 +148,9 @@ func Assemble(opts AssembleOptions, servers []ProxyOutbound) ([]byte, error) {
 	selectorList = append(selectorList, OutboundDirectTag)
 
 	defaultPick := OutboundDirectTag
-	if len(serverTags) > 1 {
+	if opts.DefaultOutbound != "" && slices.Contains(serverTags, opts.DefaultOutbound) {
+		defaultPick = opts.DefaultOutbound
+	} else if len(serverTags) > 1 {
 		defaultPick = OutboundAutoTag
 	} else if len(serverTags) == 1 {
 		defaultPick = serverTags[0]

@@ -13,7 +13,9 @@
 
 Возможности:
 
-- управление серверами/outbound'ами (импорт share-ссылок, проверка конфига);
+- управление серверами/outbound'ами: VLESS (Reality), Trojan, Shadowsocks,
+  VMess и Hysteria 2 (obfs salamander, port hopping); импорт share-ссылок,
+  выбор основного сервера или автовыбор самого быстрого, проверка конфига;
 - сборка и применение конфигурации sing-box;
 - прозрачный проксинг с селективной маршрутизацией по доменам и CIDR:
   **TProxy** (TCP+UDP — проксирует и UDP/QUIC, рекомендуется; требует системный
@@ -28,9 +30,15 @@
 
 ## Скриншоты
 
-| Обзор | Маршрутизация | Безопасность |
+| Обзор | Серверы | Сервер Hysteria 2 |
 | --- | --- | --- |
-| [![Обзор](docs/screenshots/02-overview.png)](docs/screenshots/02-overview.png) | [![Маршрутизация](docs/screenshots/03-routing.png)](docs/screenshots/03-routing.png) | [![Безопасность](docs/screenshots/04-security.png)](docs/screenshots/04-security.png) |
+| [![Обзор](docs/screenshots/02-overview.png)](docs/screenshots/02-overview.png) | [![Серверы](docs/screenshots/01-servers.png)](docs/screenshots/01-servers.png) | [![Сервер Hysteria 2](docs/screenshots/05-server-editor.png)](docs/screenshots/05-server-editor.png) |
+
+| Маршрутизация | Безопасность | |
+| --- | --- | --- |
+| [![Маршрутизация](docs/screenshots/03-routing.png)](docs/screenshots/03-routing.png) | [![Безопасность](docs/screenshots/04-security.png)](docs/screenshots/04-security.png) | |
+
+Данные на скриншотах вымышленные (адреса из TEST-NET, домены example.*).
 
 ## Архитектура
 

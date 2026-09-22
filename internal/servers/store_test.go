@@ -76,3 +76,43 @@ func TestUniqueTags(t *testing.T) {
 		t.Errorf("empty-name tag should have fallback: %v", tags)
 	}
 }
+
+func TestStore_SetPrimary(t *testing.T) {
+	s := newStore(t)
+	a, _ := s.Save(Entry{Server: share.Server{Name: "A", Type: "vless", Server: "1.1.1.1", ServerPort: 443, UUID: "u"}})
+	b, _ := s.Save(Entry{Server: share.Server{Name: "B", Type: "trojan", Server: "2.2.2.2", ServerPort: 443, Password: "p"}})
+
+	if err := s.SetPrimary(b.ID); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := s.List()
+	if list[0].Primary || !list[1].Primary {
+		t.Fatalf("primary flags: %+v", list)
+	}
+	if tag := PrimaryTag(list, UniqueTags(list)); tag != "B" {
+		t.Errorf("PrimaryTag = %q", tag)
+	}
+
+	// Editing keeps the flag even though the form doesn't send it; a client
+	// can't set it through Save either.
+	b.Name = "B2"
+	b.Primary = false
+	s.Save(b)
+	a.Primary = true
+	s.Save(a)
+	list, _ = s.List()
+	if list[0].Primary || !list[1].Primary {
+		t.Fatalf("Save must not change primary: %+v", list)
+	}
+
+	if err := s.SetPrimary(""); err != nil {
+		t.Fatal(err)
+	}
+	list, _ = s.List()
+	if list[0].Primary || list[1].Primary || PrimaryTag(list, UniqueTags(list)) != "" {
+		t.Fatalf("auto should clear all: %+v", list)
+	}
+	if err := s.SetPrimary("nope"); err != ErrNotFound {
+		t.Errorf("unknown id: %v", err)
+	}
+}

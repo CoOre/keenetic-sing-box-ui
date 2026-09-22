@@ -102,8 +102,10 @@ export interface BackupMeta {
 
 export interface Server {
   id?: string;
+  primary?: boolean; // read-only: managed via serverSetPrimary
+  tag?: string; // read-only: outbound tag in the generated config
   name: string;
-  type: "vless" | "trojan" | "shadowsocks" | "vmess";
+  type: ServerType;
   server: string;
   server_port: number;
   uuid?: string;
@@ -113,6 +115,7 @@ export interface Server {
   flow?: string;
   tls?: boolean;
   sni?: string;
+  alpn?: string[];
   fingerprint?: string;
   insecure?: boolean;
   public_key?: string;
@@ -121,7 +124,27 @@ export interface Server {
   ws_path?: string;
   ws_host?: string;
   grpc_service_name?: string;
+  // hysteria2
+  server_ports?: string[];
+  hop_interval?: string;
+  up_mbps?: number;
+  down_mbps?: number;
+  obfs_password?: string;
 }
+
+export interface ServersState {
+  servers: Server[];
+  selected?: string; // live "proxy" selector: server tag, "auto" or "direct"
+  auto_now?: string; // server urltest picked, when selected === "auto"
+}
+
+export interface ServerPrimaryResult {
+  selected: string;
+  live: boolean;
+  live_error?: string;
+}
+
+export type ServerType = "vless" | "trojan" | "shadowsocks" | "vmess" | "hysteria2";
 
 export interface ServersApplyResult {
   check: CheckResult;

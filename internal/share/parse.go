@@ -10,7 +10,7 @@ import (
 )
 
 // ParseLink parses a single proxy share link into a Server. Supported schemes:
-// vless://, trojan://, ss://, vmess://.
+// vless://, trojan://, ss://, vmess://, hysteria2:// (alias hy2://).
 func ParseLink(raw string) (*Server, error) {
 	raw = strings.TrimSpace(raw)
 	switch {
@@ -22,8 +22,10 @@ func ParseLink(raw string) (*Server, error) {
 		return parseShadowsocks(raw)
 	case strings.HasPrefix(raw, "vmess://"):
 		return parseVMess(raw)
+	case strings.HasPrefix(raw, "hysteria2://"), strings.HasPrefix(raw, "hy2://"):
+		return parseHysteria2(raw)
 	default:
-		return nil, fmt.Errorf("unsupported or unrecognized link (expected vless/trojan/ss/vmess://)")
+		return nil, fmt.Errorf("unsupported or unrecognized link (expected vless/trojan/ss/vmess/hysteria2://)")
 	}
 }
 
@@ -186,6 +188,106 @@ func parseVMess(raw string) (*Server, error) {
 		return nil, fmt.Errorf("vmess: missing id or server")
 	}
 	return s, nil
+}
+
+// parseHysteria2 handles hysteria2://auth@host:port[,port|range...]/?params#name
+// (and the hy2:// alias). Parsed by hand: url.Parse rejects multi-port hosts.
+func parseHysteria2(raw string) (*Server, error) {
+	s := &Server{Type: TypeHysteria2, TLS: true}
+	if i := strings.IndexByte(raw, '#'); i >= 0 {
+		s.Name = decodeFragment(raw[i+1:])
+		raw = raw[:i]
+	}
+	_, body, _ := strings.Cut(raw, "://")
+	var q url.Values
+	if i := strings.IndexByte(body, '?'); i >= 0 {
+		var err error
+		if q, err = url.ParseQuery(body[i+1:]); err != nil {
+			return nil, fmt.Errorf("hysteria2: query: %w", err)
+		}
+		body = body[:i]
+	}
+	body = strings.TrimSuffix(body, "/")
+	if at := strings.LastIndexByte(body, '@'); at >= 0 {
+		auth := body[:at]
+		if dec, err := url.PathUnescape(auth); err == nil {
+			auth = dec
+		}
+		s.Password = auth
+		body = body[at+1:]
+	}
+
+	host, ports := body, ""
+	if strings.HasPrefix(host, "[") {
+		end := strings.IndexByte(host, ']')
+		if end < 0 {
+			return nil, fmt.Errorf("hysteria2: bad IPv6 host %q", body)
+		}
+		host, ports = body[1:end], strings.TrimPrefix(body[end+1:], ":")
+	} else if i := strings.LastIndexByte(host, ':'); i >= 0 {
+		host, ports = body[:i], body[i+1:]
+	}
+	s.Server = host
+	if err := applyHy2Ports(s, ports); err != nil {
+		return nil, err
+	}
+	if err := applyHy2Ports(s, q.Get("mport")); err != nil {
+		return nil, err
+	}
+	if s.ServerPort == 0 && len(s.ServerPorts) == 0 {
+		s.ServerPort = 443
+	}
+
+	s.SNI = q.Get("sni")
+	if q.Get("insecure") == "1" || q.Get("allowInsecure") == "1" {
+		s.Insecure = true
+	}
+	if alpn := q.Get("alpn"); alpn != "" {
+		s.ALPN = strings.Split(alpn, ",")
+	}
+	if obfs := q.Get("obfs"); obfs != "" && obfs != "none" {
+		if obfs != "salamander" {
+			return nil, fmt.Errorf("hysteria2: unsupported obfs %q", obfs)
+		}
+		s.ObfsPassword = q.Get("obfs-password")
+	}
+	s.UpMbps = toInt(q.Get("upmbps"))
+	s.DownMbps = toInt(q.Get("downmbps"))
+
+	if s.Password == "" || s.Server == "" {
+		return nil, fmt.Errorf("hysteria2: missing auth or server")
+	}
+	return s, nil
+}
+
+// applyHy2Ports reads a comma-separated port spec: the first single port
+// becomes ServerPort, ranges ("a-b") go to ServerPorts in sing-box "a:b" form.
+func applyHy2Ports(s *Server, spec string) error {
+	for _, p := range strings.Split(spec, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if lo, hi, ok := strings.Cut(p, "-"); ok {
+			a, errA := strconv.Atoi(lo)
+			b, errB := strconv.Atoi(hi)
+			if errA != nil || errB != nil || a <= 0 || b < a || b > 65535 {
+				return fmt.Errorf("hysteria2: bad port range %q", p)
+			}
+			s.ServerPorts = append(s.ServerPorts, lo+":"+hi)
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n <= 0 || n > 65535 {
+			return fmt.Errorf("hysteria2: bad port %q", p)
+		}
+		if s.ServerPort == 0 {
+			s.ServerPort = n
+		} else {
+			s.ServerPorts = append(s.ServerPorts, p+":"+p)
+		}
+	}
+	return nil
 }
 
 // --- shared helpers ---
