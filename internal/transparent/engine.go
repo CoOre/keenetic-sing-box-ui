@@ -39,6 +39,11 @@ type Config struct {
 	// resolver.
 	RejectCIDR []string
 
+	// DNSRedirectPort, when >0, redirects LAN DNS (udp/tcp 53) to this local
+	// port (sing-box's dns-in inbound) in either transparent mode. 0 = off:
+	// clients keep using the router's resolver directly.
+	DNSRedirectPort int
+
 	// Resolved at apply time (not persisted):
 	policyMark string // "0x..." resolved from PolicyName via RCI, or ""
 }
@@ -164,6 +169,7 @@ func (e *Engine) Apply(ctx context.Context, cfg Config, table string) error {
 		// to anyway).
 		e.deleteJump(ctx, ipt, "filter", "FORWARD", chainForward, "tcp", false)
 		e.deleteJump(ctx, ipt, "filter", "FORWARD", chainForward, "udp", false)
+		e.dropDNSJumps(ctx)
 		return nil
 	}
 
@@ -174,9 +180,18 @@ func (e *Engine) Apply(ctx context.Context, cfg Config, table string) error {
 	}
 	switch cfg.Mode {
 	case ModeTProxy:
+		if table == "nat" {
+			// nat is used in tproxy mode only for the DNS intercept; strip a
+			// stale REDIRECT capture left by a previous redirect-mode run.
+			e.cleanNatCapture(ctx)
+			return e.applyDNS(ctx, cfg)
+		}
 		return e.applyTProxy(ctx, cfg)
 	case ModeRedirect:
-		return e.applyRedirect(ctx, cfg)
+		if err := e.applyRedirect(ctx, cfg); err != nil {
+			return err
+		}
+		return e.applyDNS(ctx, cfg)
 	}
 	return nil
 }
@@ -186,6 +201,10 @@ func (c Config) tables() []string {
 	switch c.Mode {
 	case ModeTProxy:
 		// mangle: the selective TPROXY. filter: the reject-set blackhole.
+		// nat: only for the optional client DNS intercept.
+		if c.DNSRedirectPort > 0 {
+			return []string{"mangle", "nat", "filter"}
+		}
 		return []string{"mangle", "filter"}
 	case ModeRedirect:
 		// nat: the selective REDIRECT. filter: reject-set blackhole + the UDP/443

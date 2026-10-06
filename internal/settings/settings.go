@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/CoOre/keenetic-sing-box-ui/internal/config"
 )
 
 type Settings struct {
@@ -51,12 +53,28 @@ type Settings struct {
 	// tunnels. Requires the proxy SERVER to be sing-box (or otherwise accept
 	// sing-box multiplex) — incompatible with xray mux.cool.
 	Multiplex bool `json:"multiplex"`
+
+	// DNS is the sing-box resolver setup (servers, rules, client intercept).
+	// Missing in older settings.json → DefaultDNS (the historical hardcoded
+	// block), so no migration is needed.
+	DNS config.DNSOptions `json:"dns"`
+}
+
+// DNSRedirectPort is the firewall's DNS intercept target: dns-in's port when
+// client interception is on in a transparent mode, else 0 (off).
+func (s Settings) DNSRedirectPort() int {
+	if !s.DNS.InterceptClients || (s.InboundMode != "tproxy" && s.InboundMode != "redirect") {
+		return 0
+	}
+	d := s.DNS
+	d.Normalize()
+	return d.Port
 }
 
 // Defaults: socks/mixed on :2080 — the mode proven to coexist with a router's
 // own VPN routing. tun tuning is kept for when tun mode is selected.
 func Defaults() Settings {
-	return Settings{InboundMode: "socks", InboundPort: 2080, TunStack: "gvisor", TunMTU: 1380, UpdateCheckHours: 6}
+	return Settings{InboundMode: "socks", InboundPort: 2080, TunStack: "gvisor", TunMTU: 1380, UpdateCheckHours: 6, DNS: config.DefaultDNS()}
 }
 
 type Store struct {
@@ -126,4 +144,5 @@ func (s *Settings) normalize() {
 	if s.UpdateCheckHours > 168 {
 		s.UpdateCheckHours = 168
 	}
+	s.DNS.Normalize()
 }

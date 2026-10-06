@@ -54,7 +54,12 @@ const (
 	chainRedirect   = Name + "_redirect"
 	chainMarkOut    = Name + "_mark_out"
 	chainForward    = Name + "_fwd" // filter FORWARD leaf: reject-set blackhole + redirect-mode QUIC block
+	chainDNS        = Name + "_dns" // nat PREROUTING leaf: LAN DNS (port 53) → sing-box dns-in
 )
+
+// dnsClientCIDRs are the source ranges whose DNS is intercepted (LAN only — a
+// WAN-side packet to :53 must never be redirected into sing-box).
+var dnsClientCIDRs = []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"}
 
 // ipset names. v4/v6 suffix is appended at use sites.
 const (

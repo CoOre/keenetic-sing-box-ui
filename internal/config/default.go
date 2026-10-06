@@ -50,24 +50,19 @@ func DefaultConfig(opts DefaultOptions) ([]byte, error) {
 		opts.ClashSecret = s
 	}
 
-	// Config targets the sing-box 1.12+ schema (new DNS server format, rule
-	// actions, route.default_domain_resolver). Verified against 1.13.x with
-	// `sing-box check`. Legacy fields (dns address strings, `block`/`dns`
-	// outbounds, rule `outbound`) are rejected by 1.13+ and intentionally
-	// avoided here.
+	// Config targets the sing-box 1.14+ schema (singbox.MinVersion): typed
+	// DNS servers, rule actions incl. DNS evaluate/respond, and
+	// route.default_domain_resolver. Verified against 1.14.x. Legacy fields
+	// (dns address strings, `block`/`dns` outbounds, rule `outbound`) are
+	// rejected by current sing-box and intentionally avoided here.
+	dnsDefault, _ := dnsBlock(DefaultDNS(), nil, false)
 	cfg := map[string]any{
 		"log": map[string]any{
 			"level":     "info",
 			"output":    opts.LogPath,
 			"timestamp": true,
 		},
-		"dns": map[string]any{
-			"servers": []map[string]any{
-				{"type": "tls", "tag": "google", "server": "8.8.8.8"},
-				{"type": "local", "tag": "local"},
-			},
-			"strategy": "ipv4_only",
-		},
+		"dns":      dnsDefault,
 		"inbounds": []any{},
 		"outbounds": []any{
 			map[string]any{

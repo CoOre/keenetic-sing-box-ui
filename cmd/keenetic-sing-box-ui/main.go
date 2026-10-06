@@ -26,9 +26,9 @@ import (
 	"github.com/CoOre/keenetic-sing-box-ui/internal/lists"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/resolve"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/servers"
-	"github.com/CoOre/keenetic-sing-box-ui/internal/subs"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/settings"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/singbox"
+	"github.com/CoOre/keenetic-sing-box-ui/internal/subs"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/system"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/transparent"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/update"
@@ -134,14 +134,15 @@ func transparentConfig(s settings.Settings) transparent.Config {
 		mode = transparent.ModeRedirect
 	}
 	return transparent.Config{
-		Mode:         mode,
-		TProxyPort:   s.InboundPort,
-		RedirectPort: s.InboundPort,
-		PolicyName:   s.PolicyName,
-		ExtraExclude: s.ExcludeCIDR,
-		UseConntrack: s.UseConntrack,
-		RouteCIDR:    s.RouteCIDR, // static seed; resolver folds in resolved domain IPs
-		RejectCIDR:   s.RejectCIDR,
+		Mode:            mode,
+		TProxyPort:      s.InboundPort,
+		RedirectPort:    s.InboundPort,
+		PolicyName:      s.PolicyName,
+		ExtraExclude:    s.ExcludeCIDR,
+		UseConntrack:    s.UseConntrack,
+		RouteCIDR:       s.RouteCIDR, // static seed; resolver folds in resolved domain IPs
+		RejectCIDR:      s.RejectCIDR,
+		DNSRedirectPort: s.DNSRedirectPort(),
 	}
 }
 
@@ -533,8 +534,12 @@ func runWatchdog(deps *api.Deps, log *slog.Logger) {
 			return
 		}
 
-		// sing-box is down: start it.
+		// sing-box is down: start it. Unhook the LAN DNS intercept first so
+		// clients resolve via the router meanwhile (assertFirewall restores it).
 		log.Info("watchdog: sing-box not listening, starting")
+		if deps.Firewall != nil && fcfg.DNSRedirectPort > 0 {
+			deps.Firewall.DropDNSIntercept(context.Background())
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if _, serr := deps.Service.Do(ctx, singbox.ActionStart); serr != nil {

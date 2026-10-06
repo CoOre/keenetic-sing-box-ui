@@ -16,6 +16,11 @@ import (
 	"strings"
 )
 
+// MinVersion is the oldest sing-box the generated config supports: 1.14
+// brought the DNS `evaluate`/`respond` rule actions that DNS failover chains
+// are built on (see config.DNSOptions).
+const MinVersion = "1.14.0"
+
 const (
 	DefaultRepo = "SagerNet/sing-box"
 	UIRepo      = "CoOre/keenetic-sing-box-ui"

@@ -24,6 +24,8 @@ export interface InstallStatus {
   path?: string;
   version?: string;
   entware: boolean;
+  min_version: string; // oldest supported sing-box
+  outdated?: boolean; // installed version is below min_version
 }
 
 export interface ServiceResult {
@@ -172,6 +174,67 @@ export interface SingboxSettings {
   auto_update_singbox?: boolean;
   auto_update_ui?: boolean;
   update_check_hours?: number;
+  // Owned by /api/dns; ignored by PUT /api/settings.
+  dns?: DNSOptions;
+}
+
+export interface DNSServer {
+  tag: string;
+  address: string; // 8.8.8.8 | tls://… | https://…/dns-query | h3://… | quic://… | dhcp://auto | local
+  detour: "direct" | "proxy";
+}
+
+export interface DNSRule {
+  domains: string[];
+  server: string;
+  backups?: string[];
+}
+
+export interface DNSOptions {
+  servers: DNSServer[];
+  final: string;
+  final_backups?: string[];
+  proxied_server: string;
+  proxied_backups?: string[];
+  rules: DNSRule[] | null;
+  strategy: "ipv4_only" | "prefer_ipv4" | "prefer_ipv6" | "ipv6_only";
+  intercept_clients: boolean;
+  port: number;
+  failover_timeout?: number; // seconds per non-last server of a chain
+}
+
+export interface DNSPreset {
+  category: string;
+  name: string;
+  tag: string;
+  address: string;
+  note?: string;
+  proxy?: boolean; // blocked directly in RU → "Через VPN" on by default
+}
+
+export interface DNSState {
+  dns: DNSOptions;
+  presets: DNSPreset[];
+  inbound_mode: SingboxSettings["inbound_mode"];
+}
+
+export interface DNSLookupServer {
+  tag: string;
+  address: string; // "local" for the router's resolver
+  proxy: boolean;
+  ips: string[];
+  ms: number;
+  status: "ok" | "blocked" | "nxdomain" | "error" | "not_applied";
+  error?: string;
+  used: boolean; // this server's answer is what the chain returns
+}
+
+export interface DNSLookupResult {
+  ips: string[];
+  ms: number;
+  error?: string;
+  chain?: string; // "Основной DNS" | "Заблокированные сайты" | "Правило N"
+  servers?: DNSLookupServer[];
 }
 
 export interface UpdateComponent {
@@ -179,6 +242,8 @@ export interface UpdateComponent {
   latest?: string;
   available: boolean;
   error?: string;
+  min?: string; // sing-box: minimum supported version
+  outdated?: boolean; // sing-box: current is below min — update required
 }
 
 export interface UpdateStatus {

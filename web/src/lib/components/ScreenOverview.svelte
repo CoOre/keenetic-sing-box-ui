@@ -165,6 +165,16 @@
     <div class="callout err"><Icon name="alert" size={17} /><div class="callout-body">{error}</div></div>
   {/if}
 
+  {#if install?.outdated}
+    <div class="callout warn">
+      <Icon name="warn" size={17} />
+      <div class="callout-body">
+        <b>sing-box {install.version} устарел</b> — нужна версия {install.min_version} или новее, иначе конфиг может не пройти проверку.
+        Обновите ядро в «Дополнительно → Обновления».
+      </div>
+    </div>
+  {/if}
+
   {#if installed && running}
     <TunnelStatus />
   {/if}
@@ -189,8 +199,8 @@
         </div>
         <div class="tile">
           <span class="tile-label">sing-box</span>
-          <span class={"tile-val " + (installed ? "ok" : "err")}>
-            <span class={"dot " + (installed ? "ok" : "err")}></span>
+          <span class={"tile-val " + (!installed ? "err" : install.outdated ? "warn" : "ok")}>
+            <span class={"dot " + (!installed ? "err" : install.outdated ? "warn" : "ok")}></span>
             {installed ? (install.version ?? "installed") : "не установлен"}
           </span>
         </div>

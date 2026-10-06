@@ -162,8 +162,8 @@ func TestAssemble_NoFakeIP(t *testing.T) {
 				t.Errorf("%s must not use fakeip DNS", mode)
 			}
 		}
-		if dns["rules"] != nil {
-			t.Errorf("%s: dns must carry no fakeip routing rules: %+v", mode, dns["rules"])
+		if r := userDNSRules(dns["rules"]); len(r) > 0 {
+			t.Errorf("%s: dns must carry no fakeip routing rules: %+v", mode, r)
 		}
 		cache := cfg["experimental"].(map[string]any)["cache_file"].(map[string]any)
 		if _, ok := cache["store_fakeip"]; ok {

@@ -56,6 +56,8 @@ type AssembleOptions struct {
 	DefaultOutbound string
 	// Multiplex enables h2mux on the proxy server outbounds (see settings.Multiplex).
 	Multiplex bool
+	// DNS is the user's resolver setup; zero value = DefaultDNS.
+	DNS DNSOptions
 }
 
 // ProxyOutbound is a single proxy server outbound (a sing-box outbound object,
@@ -171,13 +173,14 @@ func Assemble(opts AssembleOptions, servers []ProxyOutbound) ([]byte, error) {
 		clashAPI["secret"] = opts.ClashSecret
 	}
 
+	dnsBlk, dnsSets := dnsRuleSets(opts)
 	cfg := map[string]any{
 		"log": map[string]any{
 			"level":     "info",
 			"output":    opts.LogPath,
 			"timestamp": true,
 		},
-		"dns":       dnsFor(opts),
+		"dns":       dnsBlk,
 		"inbounds":  inboundsFor(opts, tun),
 		"outbounds": outbounds,
 		"route": map[string]any{
@@ -195,6 +198,10 @@ func Assemble(opts AssembleOptions, servers []ProxyOutbound) ([]byte, error) {
 		},
 	}
 
+	if len(dnsSets) > 0 {
+		cfg["route"].(map[string]any)["rule_set"] = dnsSets
+	}
+
 	body, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal config: %w", err)
@@ -202,22 +209,23 @@ func Assemble(opts AssembleOptions, servers []ProxyOutbound) ([]byte, error) {
 	return body, nil
 }
 
-// dnsFor builds the dns block. Plain resolver for every mode (no FakeIP).
-func dnsFor(opts AssembleOptions) map[string]any {
-	// Plain resolver for every mode. Transparent modes (tproxy/redirect) select
-	// at the iptables layer against the route ipset and do NOT hijack client DNS,
-	// so clients keep using the router/ISP resolver directly (fast, geo-correct).
-	return map[string]any{
-		"servers": []map[string]any{
-			{"type": "tls", "tag": "google", "server": "8.8.8.8"},
-			{"type": "local", "tag": "local"},
-		},
-		"strategy": "ipv4_only",
-	}
+// dnsRuleSets builds the dns block (plain resolver for every mode, no FakeIP)
+// and the inline rule-sets it references. Transparent modes (tproxy/redirect)
+// select at the iptables layer against the route ipset; client DNS only
+// reaches sing-box when InterceptClients is on. The ProxiedServer preset
+// matches the routing domains (manual + URL lists).
+func dnsRuleSets(opts AssembleOptions) (map[string]any, []map[string]any) {
+	routeDomains := append(append([]string{}, opts.RouteDomains...), opts.ExtraRouteDomains...)
+	return dnsBlock(opts.DNS, routeDomains, true)
 }
 
 // inboundsFor builds the inbound list for the selected mode.
 func inboundsFor(opts AssembleOptions, tun TunOptions) []any {
+	return append(modeInbounds(opts, tun), dnsInbound(opts.DNS))
+}
+
+// modeInbounds builds the mode-specific inbounds (without dns-in).
+func modeInbounds(opts AssembleOptions, tun TunOptions) []any {
 	switch opts.InboundMode {
 	case InboundSocks:
 		// mixed = SOCKS + HTTP on one port. No routing capture, so it never
@@ -326,6 +334,7 @@ func routeFinalFor(mode string) string {
 func routeRulesFor(opts AssembleOptions) []map[string]any {
 	mode := opts.InboundMode
 	rules := []map[string]any{
+		{"inbound": []string{DNSInboundTag}, "action": "hijack-dns"},
 		{"action": "sniff"},
 		{"protocol": "dns", "action": "hijack-dns"},
 	}

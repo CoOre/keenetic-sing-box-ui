@@ -6,12 +6,20 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/CoOre/keenetic-sing-box-ui/internal/singbox"
 )
 
 // gitAheadRe matches the suffix `git describe` appends to a tag when the
 // build is ahead of it: "<N>-g<hash>[-dirty]". Such a build is NEWER than the
 // tag it is based on, not older.
 var gitAheadRe = regexp.MustCompile(`^\d+-g[0-9a-f]+(-dirty)?$`)
+
+// SingBoxOutdated reports whether an installed sing-box version is older than
+// singbox.MinVersion. An empty/unparsable version is not reported.
+func SingBoxOutdated(v string) bool {
+	return v != "" && CompareVersions(v, singbox.MinVersion) < 0
+}
 
 // CompareVersions orders two version strings ("v" prefix optional):
 // -1 — a is older than b, +1 — a is newer, 0 — equal or not comparable.

@@ -126,8 +126,9 @@
     return d.toLocaleString("ru");
   }
 
-  function rowState(c?: UpdateComponent): "avail" | "ok" | "err" | "unknown" {
+  function rowState(c?: UpdateComponent): "outdated" | "avail" | "ok" | "err" | "unknown" {
     if (!c) return "unknown";
+    if (c.outdated) return "outdated";
     if (c.error) return "err";
     if (c.available) return "avail";
     if (c.latest) return "ok";
@@ -163,7 +164,13 @@
               {#if row.c?.latest && row.c.latest !== row.c.current} → {row.c.latest}{/if}
             </span>
           </div>
-          {#if rowState(row.c) === "err"}
+          {#if rowState(row.c) === "outdated"}
+            <span class="pill err" title={"Минимальная поддерживаемая версия — " + row.c?.min}><span class="dot"></span>нужна {row.c?.min}+</span>
+            <button class="btn sm primary" disabled={!!busy} onclick={applySingbox}>
+              {#if busy === "singbox"}<span class="btn-spinner"></span>{:else}<Icon name="download" size={14} />{/if}
+              Обновить
+            </button>
+          {:else if rowState(row.c) === "err"}
             <span class="pill err" title={row.c?.error}><span class="dot"></span>ошибка проверки</span>
           {:else if rowState(row.c) === "avail"}
             <span class="pill warn"><span class="dot"></span>доступно {row.c?.latest}</span>

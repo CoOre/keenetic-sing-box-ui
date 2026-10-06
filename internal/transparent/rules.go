@@ -61,7 +61,16 @@ func (e *Engine) CaptureInstalled(ctx context.Context, cfg Config) bool {
 	// The tcp PREROUTING jump is installed for both modes; if a rebuild dropped
 	// our chains it's gone too, so checking it alone is a sufficient signal.
 	args := append([]string{"-w", "-t", table, "-C", "PREROUTING"}, jumpArgs("tcp", chainPrerouting, true)...)
-	return ok(ctx, e.Runner, "iptables", args...)
+	if !ok(ctx, e.Runner, "iptables", args...) {
+		return false
+	}
+	// DNS intercept: only expected while dns-in listens (Apply strips it
+	// otherwise), so don't demand it then — that would reassert every tick.
+	if cfg.DNSRedirectPort > 0 && proxyListening(cfg.DNSRedirectPort) {
+		args := append([]string{"-w", "-t", "nat", "-C", "PREROUTING"}, jumpArgs("udp", chainDNS, false)...)
+		return ok(ctx, e.Runner, "iptables", args...)
+	}
+	return true
 }
 
 // ensureJump adds the PREROUTING->chain jump once (checked via -C). Goto: our
@@ -165,6 +174,70 @@ func (e *Engine) applyRedirect(ctx context.Context, cfg Config) error {
 	return nil
 }
 
+// applyDNS installs (or, with DNSRedirectPort=0 / dns-in not listening,
+// removes) the nat leaf that redirects LAN DNS into sing-box's dns-in inbound.
+// The jump sits at the TOP of nat PREROUTING — ahead of our redirect capture,
+// whose exclude ACCEPT would otherwise swallow DNS to the router's own private
+// address — and uses -j (not -g) so non-DNS packets fall through to the rest
+// of PREROUTING (the router's port forwards etc.). Policy gate: only the bound
+// Keenetic policy's clients are intercepted.
+func (e *Engine) applyDNS(ctx context.Context, cfg Config) error {
+	const ipt, table = "iptables", "nat"
+	if cfg.DNSRedirectPort <= 0 {
+		e.dropDNS(ctx)
+		return nil
+	}
+	if !proxyListening(cfg.DNSRedirectPort) {
+		e.log().Warn("transparent: dns-in not listening, skipping DNS intercept", "port", cfg.DNSRedirectPort)
+		e.dropDNSJumps(ctx)
+		return nil
+	}
+	port := strconv.Itoa(cfg.DNSRedirectPort)
+	e.recreateChain(ctx, ipt, table, chainDNS)
+	if cfg.policyMark != "" {
+		e.add(ctx, ipt, table, chainDNS, "-m", "connmark", "!", "--mark", cfg.policyMark, "-j", "RETURN")
+	}
+	for _, src := range dnsClientCIDRs {
+		for _, proto := range []string{"udp", "tcp"} {
+			e.add(ctx, ipt, table, chainDNS, "-s", src, "-p", proto, "--dport", "53",
+				"-j", "REDIRECT", "--to-ports", port)
+		}
+	}
+	for _, proto := range []string{"udp", "tcp"} {
+		e.ensureForwardJumpTop(ctx, ipt, table, "PREROUTING", chainDNS, proto)
+	}
+	return nil
+}
+
+// dropDNSJumps removes the nat PREROUTING jumps into the DNS leaf (traffic
+// then reaches the router's resolver directly), keeping the chain itself.
+func (e *Engine) dropDNSJumps(ctx context.Context) {
+	for _, proto := range []string{"udp", "tcp"} {
+		e.deleteJump(ctx, "iptables", "nat", "PREROUTING", chainDNS, proto, false)
+	}
+}
+
+// DropDNSIntercept unhooks the LAN DNS intercept so clients fall back to the
+// router's resolver. The watchdog calls it as soon as it sees sing-box down:
+// a dead dns-in would otherwise black-hole DNS for the whole LAN until the
+// next successful start re-applies the firewall.
+func (e *Engine) DropDNSIntercept(ctx context.Context) { e.dropDNSJumps(ctx) }
+
+// dropDNS removes the DNS intercept entirely.
+func (e *Engine) dropDNS(ctx context.Context) {
+	e.dropDNSJumps(ctx)
+	e.dropChain(ctx, "iptables", "nat", chainDNS)
+}
+
+// cleanNatCapture removes the redirect-mode nat capture (jumps + chain) while
+// leaving the DNS intercept alone.
+func (e *Engine) cleanNatCapture(ctx context.Context) {
+	for _, proto := range []string{"tcp", "udp"} {
+		e.deleteJump(ctx, "iptables", "nat", "PREROUTING", chainPrerouting, proto, true)
+	}
+	e.dropChain(ctx, "iptables", "nat", chainPrerouting)
+}
+
 // applyFilter installs the filter FORWARD leaf used by BOTH transparent modes:
 //
 //  1. Reject-set blackhole (both modes): TCP/443 to a reject-set member gets a
@@ -223,6 +296,9 @@ func (e *Engine) cleanTable(ctx context.Context, table string) {
 		}
 		for _, c := range []string{chainPrerouting, chainDivert, chainTproxy, chainRedirect, chainMarkOut, chainOutput} {
 			e.dropChain(ctx, ipt, table, c)
+		}
+		if table == "nat" {
+			e.dropDNS(ctx)
 		}
 	case "filter":
 		e.deleteJump(ctx, ipt, "filter", "FORWARD", chainForward, "tcp", false)

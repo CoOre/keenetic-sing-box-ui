@@ -123,7 +123,7 @@ func (r *Resolver) Refresh(ctx context.Context) {
 	defer debug.FreeOSMemory()
 
 	now := time.Now()
-	r.resolveInto(ctx, cleanDomains(s.RouteDomains), now)
+	r.resolveInto(ctx, LookupFor(s), cleanDomains(s.RouteDomains), now)
 
 	union := r.union(now, s.RouteCIDR, r.listCIDRs())
 	sig := signature(union)
@@ -146,7 +146,7 @@ func (r *Resolver) Refresh(ctx context.Context) {
 
 // resolveInto resolves each domain (IPv4) and records every returned IP's
 // last-seen time in the seen cache.
-func (r *Resolver) resolveInto(ctx context.Context, domains []string, now time.Time) {
+func (r *Resolver) resolveInto(ctx context.Context, lookup LookupFunc, domains []string, now time.Time) {
 	if len(domains) == 0 {
 		return
 	}
@@ -158,7 +158,7 @@ func (r *Resolver) resolveInto(ctx context.Context, domains []string, now time.T
 
 	for _, d := range domains {
 		lctx, cancel := context.WithTimeout(ctx, lookupTimeout)
-		ips, err := net.DefaultResolver.LookupIP(lctx, "ip4", d)
+		ips, err := lookup(lctx, d)
 		cancel()
 		if err != nil {
 			r.log().Debug("resolve: lookup failed", "domain", d, "err", err)

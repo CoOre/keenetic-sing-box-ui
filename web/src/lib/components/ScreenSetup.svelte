@@ -25,6 +25,8 @@
     try {
       const res = await api.install(method);
       installOut = JSON.stringify(res, null, 2);
+      const warning = (res as { warning?: string } | null)?.warning;
+      if (warning) { error = warning; return; }
       step = 4;
     } catch (e) {
       error = e instanceof ApiError ? e.message : String(e);
@@ -121,7 +123,7 @@
                   <div class="seg-radio"></div>
                   <div class="seg-main">
                     <b>opkg <span class="seg-tag">{entwareOk ? "Entware" : "недоступно"}</span></b>
-                    <div class="seg-desc">Установка через пакетный менеджер Entware. Требует настроенный репозиторий.</div>
+                    <div class="seg-desc">Установка через пакетный менеджер Entware. Требует настроенный репозиторий. Версия в Entware может быть старше {install?.min_version || "1.14"} — тогда ядро придётся обновить.</div>
                   </div>
                 </div>
               </div>

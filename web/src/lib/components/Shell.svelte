@@ -5,6 +5,7 @@
   import ScreenOverview from "./ScreenOverview.svelte";
   import ScreenConnections from "./ScreenConnections.svelte";
   import ScreenRouting from "./ScreenRouting.svelte";
+  import ScreenDNS from "./ScreenDNS.svelte";
   import ScreenServers from "./ScreenServers.svelte";
   import ScreenDiagnostics from "./ScreenDiagnostics.svelte";
   import ScreenAdvanced from "./ScreenAdvanced.svelte";
@@ -13,9 +14,9 @@
 
   let { onLogout }: { onLogout: () => void } = $props();
 
-  type Route = "overview" | "connections" | "routing" | "servers" | "diagnostics" | "advanced" | "security" | "setup";
+  type Route = "overview" | "connections" | "routing" | "dns" | "servers" | "diagnostics" | "advanced" | "security" | "setup";
 
-  const ROUTES: Route[] = ["overview", "connections", "routing", "servers", "diagnostics", "advanced", "security", "setup"];
+  const ROUTES: Route[] = ["overview", "connections", "routing", "dns", "servers", "diagnostics", "advanced", "security", "setup"];
 
   function routeFromHash(): Route {
     const h = location.hash.replace(/^#\/?/, "");
@@ -81,6 +82,7 @@
     { id: "overview" as Route, label: "Обзор", icon: "overview" },
     { id: "connections" as Route, label: "Соединения", icon: "connections" },
     { id: "routing" as Route, label: "Маршрутизация", icon: "route" },
+    { id: "dns" as Route, label: "DNS", icon: "globe" },
     { id: "servers" as Route, label: "Серверы", icon: "server" },
     { id: "diagnostics" as Route, label: "Диагностика", icon: "diagnostics" },
   ];
@@ -93,6 +95,7 @@
     overview:    ["Обзор", "Состояние системы и сервиса"],
     connections: ["Соединения", "Живые соединения через sing-box"],
     routing:     ["Маршрутизация", "Режим перехвата, домены и подсети"],
+    dns:         ["DNS", "Серверы, правила и перехват DNS"],
     servers:     ["VPN-серверы", "Outbound-подключения sing-box"],
     diagnostics: ["Диагностика", "Логи, проверка конфига, outbounds"],
     advanced:    ["Дополнительно", "Обновления, raw config и резервные копии"],
@@ -215,6 +218,8 @@
           <ScreenConnections />
         {:else if route === "routing"}
           <ScreenRouting />
+        {:else if route === "dns"}
+          <ScreenDNS />
         {:else if route === "servers"}
           <ScreenServers />
         {:else if route === "diagnostics"}

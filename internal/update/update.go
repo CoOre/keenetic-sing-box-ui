@@ -29,6 +29,10 @@ type Component struct {
 	Latest    string `json:"latest,omitempty"`
 	Available bool   `json:"available"`
 	Error     string `json:"error,omitempty"`
+	// Min/Outdated: sing-box only — the installed version is below the
+	// minimum the generated config needs, so updating is required.
+	Min      string `json:"min,omitempty"`
+	Outdated bool   `json:"outdated,omitempty"`
 }
 
 // Status is the cached result of the last version check.
@@ -104,6 +108,8 @@ func (m *Manager) checkSingBox(ctx context.Context) Component {
 	if v, err := system.SingBoxVersion(ctx, m.Runner, m.SingBoxBin); err == nil {
 		c.Current = v
 	}
+	c.Min = singbox.MinVersion
+	c.Outdated = SingBoxOutdated(c.Current)
 	asset, err := m.SingBoxGH.ResolveLatest(ctx, m.BaseURL, runtime.GOARCH)
 	if err != nil {
 		c.Error = err.Error()

@@ -21,6 +21,9 @@ import type {
   UpdateStatusResp,
   TraceReport,
   FullBackupResult,
+  DNSOptions,
+  DNSState,
+  DNSLookupResult,
 } from "./types";
 
 export class ApiError extends Error {
@@ -211,6 +214,18 @@ export const api = {
   async policies(): Promise<KeeneticPolicy[]> {
     const r = await request<{ policies: KeeneticPolicy[] }>("GET", "/api/transparent/policies");
     return r.policies ?? [];
+  },
+
+  // --- DNS ---
+  dnsGet(): Promise<DNSState> {
+    return request("GET", "/api/dns");
+  },
+  async dnsSave(d: DNSOptions): Promise<DNSOptions> {
+    const r = await request<{ dns: DNSOptions }>("PUT", "/api/dns", d);
+    return r.dns;
+  },
+  dnsLookup(domain: string): Promise<DNSLookupResult> {
+    return request("POST", "/api/dns/lookup", { domain });
   },
 
   // --- subscriptions ---

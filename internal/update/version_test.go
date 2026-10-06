@@ -32,3 +32,19 @@ func TestCompareVersions(t *testing.T) {
 		}
 	}
 }
+
+func TestSingBoxOutdated(t *testing.T) {
+	for v, want := range map[string]bool{
+		"1.13.13":       true,
+		"1.14.0-beta.1": true,
+		"1.14.0":        false,
+		"1.14.2":        false,
+		"v1.15.0":       false,
+		"":              false,
+		"garbage":       false,
+	} {
+		if got := SingBoxOutdated(v); got != want {
+			t.Errorf("SingBoxOutdated(%q) = %v, want %v", v, got, want)
+		}
+	}
+}

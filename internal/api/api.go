@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/CoOre/keenetic-sing-box-ui/internal/auth"
@@ -96,6 +97,9 @@ func Register(mux *http.ServeMux, a *auth.Authenticator, d *Deps) {
 	if d.Settings != nil {
 		mux.Handle("GET /api/settings", protect(http.HandlerFunc(h.settingsGet)))
 		mux.Handle("PUT /api/settings", protect(http.HandlerFunc(h.settingsSave)))
+		mux.Handle("GET /api/dns", protect(http.HandlerFunc(h.dnsGet)))
+		mux.Handle("PUT /api/dns", protect(http.HandlerFunc(h.dnsSave)))
+		mux.Handle("POST /api/dns/lookup", protect(http.HandlerFunc(h.dnsLookup)))
 	}
 
 	if d.Update != nil {
@@ -160,6 +164,10 @@ type installStatusResp struct {
 	Path      string `json:"path,omitempty"`
 	Version   string `json:"version,omitempty"`
 	Entware   bool   `json:"entware"`
+	// MinVersion is the oldest supported sing-box; Outdated flags an
+	// installed binary below it (the UI asks to update).
+	MinVersion string `json:"min_version"`
+	Outdated   bool   `json:"outdated,omitempty"`
 }
 
 func (h *handlers) installStatus(w http.ResponseWriter, r *http.Request) {
@@ -168,11 +176,12 @@ func (h *handlers) installStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	resp := installStatusResp{Entware: info.Entware != nil}
+	resp := installStatusResp{Entware: info.Entware != nil, MinVersion: singbox.MinVersion}
 	if info.SingBox != nil {
 		resp.Installed = true
 		resp.Path = info.SingBox.Path
 		resp.Version = info.SingBox.Version
+		resp.Outdated = update.SingBoxOutdated(info.SingBox.Version)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -190,6 +199,7 @@ type installResp struct {
 	Bootstrap        *singbox.BootstrapResult `json:"bootstrap,omitempty"`
 	ConfigRegnerated bool                     `json:"config_regenerated,omitempty"`
 	ConfigBackup     string                   `json:"config_backup,omitempty"`
+	Warning          string                   `json:"warning,omitempty"`
 }
 
 func (h *handlers) install(w http.ResponseWriter, r *http.Request) {
@@ -217,6 +227,14 @@ func (h *handlers) install(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Bootstrap = &bs
 		h.repairInvalidConfig(r, &out)
+		// Entware's package often lags behind; flag a version below the
+		// supported minimum so the UI can offer the GitHub build instead.
+		if info, derr := h.d.Detector.Detect(r.Context()); derr == nil && info.SingBox != nil &&
+			update.SingBoxOutdated(info.SingBox.Version) {
+			out.Version = info.SingBox.Version
+			out.Warning = fmt.Sprintf("opkg установил sing-box %s — нужна версия %s или новее. Установите из GitHub.",
+				info.SingBox.Version, singbox.MinVersion)
+		}
 		writeJSON(w, http.StatusOK, out)
 	case "github":
 		arch := req.Arch
@@ -608,6 +626,7 @@ func (h *handlers) diagTrace(w http.ResponseWriter, r *http.Request) {
 		Sources:      srcs,
 		Engine:       h.d.Firewall,
 		EngineConfig: transparentConfigFromSettings(st, listCIDRs),
+		LookupIP:     resolve.LookupFor(st),
 		ClashAddr:    h.d.ClashAddr,
 		ClashSecret:  h.d.ClashSecret,
 	}
@@ -761,7 +780,15 @@ func (h *handlers) settingsSave(w http.ResponseWriter, r *http.Request) {
 	// RouteCIDR/RouteDomains can legitimately hold a few hundred to a few
 	// thousand manually-curated entries (a 240-CIDR list alone is ~4 KiB), so
 	// the old 4 KiB cap rejected real saves with "request body too large".
+	stored := in
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// DNS is owned by /api/dns: a screen holding a stale settings copy must
+	// not roll it back. Still re-check it against a changed inbound port.
+	in.DNS = stored.DNS
+	if err := in.DNS.Validate(in.InboundPort); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -771,6 +798,191 @@ func (h *handlers) settingsSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, saved)
+}
+
+// --- DNS ---
+
+func (h *handlers) dnsGet(w http.ResponseWriter, r *http.Request) {
+	s, err := h.d.Settings.Get()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"dns":          s.DNS,
+		"presets":      config.DNSPresets,
+		"inbound_mode": s.InboundMode,
+	})
+}
+
+// dnsSave replaces the DNS options (validated). Like the other settings it
+// takes effect on the next Apply (config rebuild + restart + firewall).
+func (h *handlers) dnsSave(w http.ResponseWriter, r *http.Request) {
+	var in config.DNSOptions
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s, err := h.d.Settings.Get()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := in.Validate(s.InboundPort); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.DNS = in
+	saved, err := h.d.Settings.Save(s)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"dns": saved.DNS})
+}
+
+type dnsLookupReq struct {
+	Domain string `json:"domain"`
+}
+
+type dnsLookupResp struct {
+	IPs   []string `json:"ips"`
+	MS    int64    `json:"ms"`
+	Error string   `json:"error,omitempty"`
+	// Chain is which chain resolves the domain ("Основной DNS", "Заблокированные
+	// сайты", "Правило N"); Servers is that chain probed server by server.
+	Chain   string            `json:"chain"`
+	Servers []dnsLookupServer `json:"servers"`
+}
+
+type dnsLookupServer struct {
+	Tag     string   `json:"tag"`
+	Address string   `json:"address"`
+	Proxy   bool     `json:"proxy"`
+	IPs     []string `json:"ips"`
+	MS      int64    `json:"ms"`
+	// Status: ok | blocked (0.0.0.0 sinkhole) | nxdomain | error | not_applied
+	// (the running config predates this server — apply first).
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+	// Used marks the server whose answer the chain returns: the first one
+	// (in failover order) that gave a real answer.
+	Used bool `json:"used"`
+}
+
+// dnsLookup resolves a domain through sing-box's dns-in for the "Проверить"
+// button: the answer clients get (full chain, cache included), plus each
+// server of the matching chain asked individually via its probe port — so
+// the UI can show which server answered and how the backups are doing.
+func (h *handlers) dnsLookup(w http.ResponseWriter, r *http.Request) {
+	var req dnsLookupReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	host := strings.TrimSpace(req.Domain)
+	if host == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("domain is required"))
+		return
+	}
+	s, err := h.d.Settings.Get()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	var listDomains []string
+	if h.d.Lists != nil {
+		listDomains, _, _ = h.d.Lists.MergedEntries()
+	}
+	chainName, chain := s.DNS.ChainFor(host, append(append([]string{}, s.RouteDomains...), listDomains...))
+	var probePorts map[string]int
+	if body, rerr := os.ReadFile(h.d.Paths.SingBoxConfig); rerr == nil {
+		probePorts = config.DNSProbePorts(body)
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	resp := dnsLookupResp{IPs: []string{}, Chain: chainName, Servers: make([]dnsLookupServer, len(chain))}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		start := time.Now()
+		ips, lerr := resolve.SingBoxResolver(s.DNS.Port).LookupIP(ctx, "ip4", host)
+		resp.MS = time.Since(start).Milliseconds()
+		resp.Error = lookupErrText(lerr)
+		for _, ip := range ips {
+			resp.IPs = append(resp.IPs, ip.String())
+		}
+	}()
+	for i, tag := range chain {
+		srv := dnsLookupServer{Tag: tag, Address: config.DNSLocalTag, IPs: []string{}}
+		for _, d := range s.DNS.Servers {
+			if d.Tag == tag {
+				srv.Address, srv.Proxy = d.Address, d.Detour == config.OutboundProxyTag
+			}
+		}
+		port, ok := probePorts[tag]
+		if !ok {
+			srv.Status = "not_applied"
+			resp.Servers[i] = srv
+			continue
+		}
+		wg.Add(1)
+		go func(i int, srv dnsLookupServer) {
+			defer wg.Done()
+			start := time.Now()
+			ips, lerr := resolve.SingBoxProbeResolver(s.DNS.Port, port).LookupIP(ctx, "ip4", host)
+			srv.MS = time.Since(start).Milliseconds()
+			srv.Status = "ok"
+			var dnsErr *net.DNSError
+			switch {
+			case errors.As(lerr, &dnsErr) && dnsErr.IsNotFound:
+				srv.Status = "nxdomain"
+			case lerr != nil:
+				srv.Status, srv.Error = "error", lookupErrText(lerr)
+			default:
+				sinkhole := true
+				for _, ip := range ips {
+					srv.IPs = append(srv.IPs, ip.String())
+					if !ip.IsUnspecified() && !ip.IsLoopback() {
+						sinkhole = false
+					}
+				}
+				if sinkhole {
+					srv.Status = "blocked"
+				}
+			}
+			resp.Servers[i] = srv
+		}(i, srv)
+	}
+	wg.Wait()
+	for i := range resp.Servers {
+		if st := resp.Servers[i].Status; st == "ok" || st == "blocked" || st == "nxdomain" {
+			resp.Servers[i].Used = true
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// lookupErrText renders a Go resolver error for the UI. The stdlib message
+// names the system resolver ("on 127.0.0.1:53"), not dns-in, so it misleads.
+func lookupErrText(err error) string {
+	var dnsErr *net.DNSError
+	switch {
+	case err == nil:
+		return ""
+	case errors.As(err, &dnsErr) && dnsErr.IsNotFound:
+		return "домен не существует (NXDOMAIN)"
+	case errors.As(err, &dnsErr) && dnsErr.IsTimeout:
+		return "нет ответа (таймаут)"
+	case strings.Contains(err.Error(), "connection refused"):
+		return "sing-box не отвечает — он запущен?"
+	case errors.As(err, &dnsErr):
+		return dnsErr.Err
+	}
+	return err.Error()
 }
 
 // transparentPolicies lists the router's Keenetic routing policies (via RCI) so
@@ -993,8 +1205,9 @@ func transparentConfigFromSettings(s settings.Settings, listCIDRs []string) tran
 		UseConntrack: s.UseConntrack,
 		// Static seed for the route ipset (redirect mode): manual RouteCIDR +
 		// CIDRs from URL lists. The resolver folds in resolved domain IPs.
-		RouteCIDR:  append(append([]string{}, s.RouteCIDR...), listCIDRs...),
-		RejectCIDR: s.RejectCIDR,
+		RouteCIDR:       append(append([]string{}, s.RouteCIDR...), listCIDRs...),
+		RejectCIDR:      s.RejectCIDR,
+		DNSRedirectPort: s.DNSRedirectPort(),
 	}
 }
 
@@ -1059,6 +1272,7 @@ func (h *handlers) applyServers(ctx context.Context, restart bool) (serversApply
 		ExtraRouteCIDR:    listCIDRs,   // from URL lists, Patricia trie (~2 MB per 1000)
 		Multiplex:         st.Multiplex,
 		DefaultOutbound:   primaryTag,
+		DNS:               st.DNS,
 	}, outs)
 	if err != nil {
 		return serversApplyResp{}, http.StatusInternalServerError, err
