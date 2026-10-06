@@ -116,3 +116,56 @@ func TestStore_SetPrimary(t *testing.T) {
 		t.Errorf("unknown id: %v", err)
 	}
 }
+
+func TestStore_SyncSub(t *testing.T) {
+	s := newStore(t)
+	manual, _ := s.Save(Entry{Server: share.Server{Name: "M", Type: "trojan", Server: "9.9.9.9", ServerPort: 443, Password: "p"}})
+	a := share.Server{Name: "A", Type: "vless", Server: "1.1.1.1", ServerPort: 443, UUID: "u1"}
+	b := share.Server{Name: "B", Type: "vless", Server: "2.2.2.2", ServerPort: 443, UUID: "u2"}
+
+	changed, err := s.SyncSub("sub1", []share.Server{a, b})
+	if err != nil || !changed {
+		t.Fatalf("first sync: changed=%v err=%v", changed, err)
+	}
+	list, _ := s.List()
+	if len(list) != 3 || list[0].ID != manual.ID || list[1].SubID != "sub1" || list[2].Name != "B" {
+		t.Fatalf("unexpected list: %+v", list)
+	}
+	if err := s.SetPrimary(list[2].ID); err != nil {
+		t.Fatal(err)
+	}
+	idB := list[2].ID
+
+	if changed, _ := s.SyncSub("sub1", []share.Server{a, b}); changed {
+		t.Error("identical sync reported a change")
+	}
+
+	// B renamed (same server), A gone, C new: B keeps ID and primary.
+	b.Name = "B — 12 GB left"
+	c := share.Server{Name: "C", Type: "trojan", Server: "3.3.3.3", ServerPort: 443, Password: "x"}
+	if changed, _ := s.SyncSub("sub1", []share.Server{b, c}); !changed {
+		t.Fatal("expected change")
+	}
+	list, _ = s.List()
+	if len(list) != 3 || list[1].ID != idB || !list[1].Primary || list[1].Name != b.Name || list[2].Name != "C" {
+		t.Fatalf("after resync: %+v", list)
+	}
+
+	// Editing a subscription server by hand must not detach it.
+	e := list[1]
+	e.SubID = ""
+	e.Name = "edited"
+	s.Save(e)
+	list, _ = s.List()
+	if list[1].SubID != "sub1" {
+		t.Error("Save dropped SubID")
+	}
+
+	if err := s.DeleteSub("sub1"); err != nil {
+		t.Fatal(err)
+	}
+	list, _ = s.List()
+	if len(list) != 1 || list[0].ID != manual.ID {
+		t.Fatalf("after DeleteSub: %+v", list)
+	}
+}

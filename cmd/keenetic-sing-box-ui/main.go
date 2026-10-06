@@ -26,6 +26,7 @@ import (
 	"github.com/CoOre/keenetic-sing-box-ui/internal/lists"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/resolve"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/servers"
+	"github.com/CoOre/keenetic-sing-box-ui/internal/subs"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/settings"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/singbox"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/system"
@@ -272,6 +273,7 @@ func runServer(args []string) int {
 		Settings:    settings.NewStore(filepath.Join(filepath.Dir(*cfgPath), "singbox-settings.json")),
 		Firewall:    &transparent.Engine{Runner: cmdrun.OS{}, Log: logger, Bin: selfPath()},
 		Lists:       lists.NewStore(filepath.Join(filepath.Dir(*cfgPath), "lists.json")),
+		Subs:        subs.NewStore(filepath.Join(filepath.Dir(*cfgPath), "subs.json")),
 	}
 	// Full-state export/import: one archive with the sing-box config plus all
 	// UI stores, enough to restore a wiped router in one upload.
@@ -280,6 +282,7 @@ func runServer(args []string) int {
 		ServersPath:       deps.Servers.Path,
 		SettingsPath:      deps.Settings.Path,
 		ListsPath:         deps.Lists.Path,
+		SubsPath:          deps.Subs.Path,
 		TLSCertPath:       uiCfg.TLSCertPath,
 		TLSKeyPath:        uiCfg.TLSKeyPath,
 		SingBoxConfigPath: paths.SingBoxConfig,
@@ -318,6 +321,15 @@ func runServer(args []string) int {
 		Log:        logger,
 	}
 
+	// Subscription runner: re-fetches subscription URLs on schedule and syncs
+	// their servers; OnChanged (auto-apply) is wired by api.Register.
+	deps.SubRunner = &subs.Runner{
+		Store:       deps.Subs,
+		Servers:     deps.Servers,
+		Log:         logger,
+		ProxyClient: deps.Update.ProxiedClient,
+	}
+
 	// Background: auto-start sing-box if installed + watchdog to revive it.
 	go runWatchdog(deps, logger)
 
@@ -350,6 +362,7 @@ func runServer(args []string) int {
 
 	go deps.Resolver.Start(ctx)
 	go deps.Update.Run(ctx)
+	go deps.SubRunner.Start(ctx)
 
 	go func() {
 		logger.Info("listening http", "addr", httpAddr, "https_redirect", uiCfg.HTTPSOnly)

@@ -12,7 +12,7 @@ LDFLAGS      := -s -w \
 GOFLAGS      := -trimpath -ldflags '$(LDFLAGS)'
 NPM_CACHE    ?= /tmp/ksbui-npmcache
 
-.PHONY: all build build-arm64 build-web web-install run test lint tidy clean package install-router
+.PHONY: all build build-arm64 build-web web-install run test lint hooks tidy clean package install-router
 
 all: build
 
@@ -44,6 +44,10 @@ test:
 
 lint:
 	golangci-lint run ./...
+
+hooks:
+	chmod +x .githooks/*
+	git config core.hooksPath .githooks
 
 tidy:
 	go mod tidy

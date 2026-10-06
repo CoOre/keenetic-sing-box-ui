@@ -20,6 +20,7 @@ import (
 	"github.com/CoOre/keenetic-sing-box-ui/internal/servers"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/settings"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/singbox"
+	"github.com/CoOre/keenetic-sing-box-ui/internal/subs"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/system"
 )
 
@@ -60,7 +61,9 @@ func newEnv(t *testing.T) *testEnv {
 		LogPath:  paths.SingBoxLog,
 		Servers:  servers.NewStore(filepath.Join(root, "servers.json")),
 		Settings: settings.NewStore(filepath.Join(root, "singbox-settings.json")),
+		Subs:     subs.NewStore(filepath.Join(root, "subs.json")),
 	}
+	deps.SubRunner = &subs.Runner{Store: deps.Subs, Servers: deps.Servers}
 	deps.Backup = &backup.Manager{
 		UIConfigPath:      filepath.Join(root, "ui-config.json"),
 		ServersPath:       deps.Servers.Path,

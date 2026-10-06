@@ -3,6 +3,7 @@
   import type { Server, CheckResult } from "../types";
   import Icon from "./Icon.svelte";
   import ServerEditor from "./ServerEditor.svelte";
+  import SubsCard from "./SubsCard.svelte";
 
   const TYPE_LABEL: Record<string, string> = {
     vless: "VLESS", trojan: "Trojan", shadowsocks: "SS", vmess: "VMess", hysteria2: "HY2",
@@ -20,10 +21,13 @@
   let applyCheck = $state<CheckResult | null>(null);
   let confirmDelete = $state<Server | null>(null);
   let confirmApply = $state(false);
+  // sub_id → subscription name, for the "from subscription" tag.
+  let subNames = $state<Record<string, string>>({});
 
   async function loadList() {
     try {
-      const st = await api.serverState();
+      const [st, subs] = await Promise.all([api.serverState(), api.subList().catch(() => [])]);
+      subNames = Object.fromEntries(subs.map((x) => [x.id, x.name || x.url]));
       servers = st.servers;
       selected = st.selected ?? "";
       autoNow = st.auto_now ?? "";
@@ -129,7 +133,7 @@
         <div class="empty">
           <div class="empty-icon"><Icon name="server" size={20} /></div>
           <h4>Серверов пока нет</h4>
-          <p>Добавьте первый сервер по share-ссылке (vless, trojan, ss, vmess, hy2) или вручную.</p>
+          <p>Добавьте первый сервер по share-ссылке (vless, trojan, ss, vmess, hy2), вручную или через подписку ниже.</p>
           <button class="btn primary" style="margin-top:12px" onclick={() => (editor = "new")}><Icon name="plus" size={16} />Добавить сервер</button>
         </div>
       {:else}
@@ -141,6 +145,7 @@
                 <span class="seg-tag">{TYPE_LABEL[s.type] ?? s.type}</span>
                 {#if s.public_key}<span class="tag" style="color:var(--accent-text)">reality</span>{/if}
                 {#if s.obfs_password}<span class="tag" style="color:var(--accent-text)">obfs</span>{/if}
+                {#if s.sub_id}<span class="tag" title="Сервер из подписки: обновляется автоматически"><Icon name="link" size={11} />{subNames[s.sub_id] ?? "подписка"}</span>{/if}
                 {#if multi && isMain(s)}<span class="pill accent">основной</span>{/if}
                 {#if selected === "auto" && autoNow === s.tag}<span class="pill">авто · сейчас</span>{/if}
               </div>
@@ -158,12 +163,14 @@
                   Сделать основным
                 </button>
               {/if}
-              <button class="btn sm" onclick={() => (editor = s)}>
-                <Icon name="edit" size={14} />Изменить
-              </button>
-              <button class="btn sm danger icon" onclick={() => confirmDelete = s} title="Удалить">
-                <Icon name="trash" size={14} />
-              </button>
+              {#if !s.sub_id}
+                <button class="btn sm" onclick={() => (editor = s)}>
+                  <Icon name="edit" size={14} />Изменить
+                </button>
+                <button class="btn sm danger icon" onclick={() => confirmDelete = s} title="Удалить">
+                  <Icon name="trash" size={14} />
+                </button>
+              {/if}
             </div>
           </div>
         {/each}
@@ -189,6 +196,8 @@
       </div>
     </div>
   </div>
+
+  <SubsCard onchanged={loadList} />
 
   {#if editor}
     <ServerEditor

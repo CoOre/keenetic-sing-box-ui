@@ -21,10 +21,12 @@ import (
 
 // Entry is a stored server: a share.Server plus a stable ID. Primary marks
 // the server the "proxy" selector should point at; at most one entry has it,
-// and none means "auto" (fastest by urltest).
+// and none means "auto" (fastest by urltest). SubID links the entry to the
+// subscription that manages it (see SyncSub); empty = added by hand.
 type Entry struct {
 	ID      string `json:"id"`
 	Primary bool   `json:"primary,omitempty"`
+	SubID   string `json:"sub_id,omitempty"`
 	share.Server
 }
 
@@ -73,7 +75,8 @@ func (s *Store) List() ([]Entry, error) {
 
 // Save adds a new entry (when ID is empty) or replaces an existing one by ID.
 // Returns the stored entry (with its ID). The Primary flag is owned by
-// SetPrimary: it is kept from the stored entry, never taken from e.
+// SetPrimary and SubID by SyncSub: both are kept from the stored entry, never
+// taken from e.
 func (s *Store) Save(e Entry) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -82,6 +85,7 @@ func (s *Store) Save(e Entry) (Entry, error) {
 		return Entry{}, err
 	}
 	e.Primary = false
+	e.SubID = ""
 	if e.ID == "" {
 		e.ID = newID()
 		list = append(list, e)
@@ -90,6 +94,7 @@ func (s *Store) Save(e Entry) (Entry, error) {
 		for i := range list {
 			if list[i].ID == e.ID {
 				e.Primary = list[i].Primary
+				e.SubID = list[i].SubID
 				list[i] = e
 				replaced = true
 				break
@@ -119,6 +124,99 @@ func (s *Store) Delete(id string) error {
 		}
 	}
 	return s.save(out)
+}
+
+// SyncSub replaces the entries owned by subscription subID with fresh, in
+// order. Servers that match an existing entry (same type, address and
+// credentials) keep its ID and Primary flag, so a refresh doesn't lose the
+// user's main-server pick. The block stays where the subscription's first
+// entry was; a new subscription is appended. Reports whether anything changed.
+func (s *Store) SyncSub(subID string, fresh []share.Server) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, err := s.load()
+	if err != nil {
+		return false, err
+	}
+	pos := -1
+	var old []Entry
+	rest := make([]Entry, 0, len(list))
+	for _, e := range list {
+		if e.SubID == subID {
+			if pos < 0 {
+				pos = len(rest)
+			}
+			old = append(old, e)
+			continue
+		}
+		rest = append(rest, e)
+	}
+	if pos < 0 {
+		pos = len(rest)
+	}
+
+	byKey := map[string][]Entry{}
+	for _, e := range old {
+		k := serverKey(e.Server)
+		byKey[k] = append(byKey[k], e)
+	}
+	next := make([]Entry, 0, len(fresh))
+	for _, srv := range fresh {
+		e := Entry{SubID: subID, Server: srv}
+		k := serverKey(srv)
+		if m := byKey[k]; len(m) > 0 {
+			e.ID, e.Primary = m[0].ID, m[0].Primary
+			byKey[k] = m[1:]
+		} else {
+			e.ID = newID()
+		}
+		next = append(next, e)
+	}
+	if entriesEqual(old, next) {
+		return false, nil
+	}
+	out := make([]Entry, 0, len(rest)+len(next))
+	out = append(out, rest[:pos]...)
+	out = append(out, next...)
+	out = append(out, rest[pos:]...)
+	return true, s.save(out)
+}
+
+// DeleteSub removes every entry owned by subscription subID.
+func (s *Store) DeleteSub(subID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, err := s.load()
+	if err != nil {
+		return err
+	}
+	out := list[:0]
+	for _, e := range list {
+		if e.SubID != subID {
+			out = append(out, e)
+		}
+	}
+	return s.save(out)
+}
+
+// serverKey identifies "the same server" across subscription refreshes: the
+// name is excluded (providers often put live stats in it).
+func serverKey(v share.Server) string {
+	return strings.Join([]string{v.Type, strings.ToLower(v.Server), itoa(v.ServerPort), v.UUID, v.Password}, "|")
+}
+
+func entriesEqual(a, b []Entry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		x, _ := json.Marshal(a[i])
+		y, _ := json.Marshal(b[i])
+		if string(x) != string(y) {
+			return false
+		}
+	}
+	return true
 }
 
 // ErrNotFound is returned by SetPrimary for an unknown ID.

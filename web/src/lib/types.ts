@@ -104,6 +104,7 @@ export interface Server {
   id?: string;
   primary?: boolean; // read-only: managed via serverSetPrimary
   tag?: string; // read-only: outbound tag in the generated config
+  sub_id?: string; // read-only: set when the server comes from a subscription
   name: string;
   type: ServerType;
   server: string;
@@ -201,6 +202,47 @@ export interface KeeneticPolicy {
   id: string;
   description: string;
   mark: string;
+}
+
+// --- subscriptions (/api/subs) ---
+
+export interface SubUserInfo {
+  upload?: number;
+  download?: number;
+  total?: number;
+  expire?: number; // unix seconds
+}
+
+export interface Subscription {
+  id: string;
+  name: string;
+  url: string;
+  interval: number; // minutes
+  enabled: boolean;
+  auto_apply: boolean;
+  user_agent?: string;
+  last_fetch?: string;
+  last_error?: string;
+  last_count: number;
+  skipped?: number;
+  via?: "direct" | "proxy";
+  info?: SubUserInfo;
+}
+
+export interface SubInput {
+  name: string;
+  url: string;
+  interval: number;
+  enabled?: boolean;
+  auto_apply: boolean;
+  user_agent?: string;
+}
+
+export interface SubRefreshResult {
+  subscription: Subscription;
+  changed: boolean;
+  apply?: ServersApplyResult;
+  apply_error?: string;
 }
 
 export interface ListSource {

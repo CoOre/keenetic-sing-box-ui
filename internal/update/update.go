@@ -252,7 +252,7 @@ func (m *Manager) install(ctx context.Context, gh *singbox.Github, asset singbox
 	if err == nil {
 		return nil
 	}
-	proxied := m.proxiedClient()
+	proxied := m.ProxiedClient()
 	if proxied == nil {
 		return err
 	}
@@ -265,10 +265,10 @@ func (m *Manager) install(ctx context.Context, gh *singbox.Github, asset singbox
 	return nil
 }
 
-// proxiedClient returns an HTTP client tunnelling through the local sing-box
+// ProxiedClient returns an HTTP client tunnelling through the local sing-box
 // proxy inbound, or nil if none is listening: the mixed inbound itself in
 // socks mode, the companion loopback inbound in the transparent modes.
-func (m *Manager) proxiedClient() *http.Client {
+func (m *Manager) ProxiedClient() *http.Client {
 	s, err := m.Settings.Get()
 	if err != nil {
 		return nil

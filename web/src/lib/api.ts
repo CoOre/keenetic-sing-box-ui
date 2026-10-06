@@ -14,6 +14,9 @@ import type {
   SingboxSettings,
   KeeneticPolicy,
   ListSource,
+  Subscription,
+  SubInput,
+  SubRefreshResult,
   UpdateStatus,
   UpdateStatusResp,
   TraceReport,
@@ -208,6 +211,25 @@ export const api = {
   async policies(): Promise<KeeneticPolicy[]> {
     const r = await request<{ policies: KeeneticPolicy[] }>("GET", "/api/transparent/policies");
     return r.policies ?? [];
+  },
+
+  // --- subscriptions ---
+  async subList(): Promise<Subscription[]> {
+    const r = await request<{ subscriptions: Subscription[] }>("GET", "/api/subs");
+    return r.subscriptions ?? [];
+  },
+  // Adds and fetches right away; a failed first fetch is an error and nothing is stored.
+  subAdd(s: SubInput): Promise<SubRefreshResult> {
+    return request("POST", "/api/subs", s);
+  },
+  subUpdate(id: string, s: SubInput): Promise<Subscription> {
+    return request("PUT", `/api/subs/${encodeURIComponent(id)}`, s);
+  },
+  async subDelete(id: string): Promise<void> {
+    await request("DELETE", `/api/subs/${encodeURIComponent(id)}`);
+  },
+  subRefresh(id: string): Promise<SubRefreshResult> {
+    return request("POST", `/api/subs/${encodeURIComponent(id)}/refresh`);
   },
 
   // --- list sources ---

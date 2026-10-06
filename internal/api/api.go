@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/CoOre/keenetic-sing-box-ui/internal/auth"
@@ -26,6 +28,7 @@ import (
 	"github.com/CoOre/keenetic-sing-box-ui/internal/settings"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/share"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/singbox"
+	"github.com/CoOre/keenetic-sing-box-ui/internal/subs"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/system"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/trace"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/transparent"
@@ -51,6 +54,8 @@ type Deps struct {
 	Resolver    *resolve.Resolver
 	Update      *update.Manager
 	Backup      *backup.Manager
+	Subs        *subs.Store
+	SubRunner   *subs.Runner
 }
 
 // Register mounts all /api/* routes on mux behind RequireAuth + RequireCSRF.
@@ -102,6 +107,22 @@ func Register(mux *http.ServeMux, a *auth.Authenticator, d *Deps) {
 	if d.Backup != nil {
 		mux.Handle("GET /api/backup/export", protect(http.HandlerFunc(h.backupExport)))
 		mux.Handle("POST /api/backup/import", protect(http.HandlerFunc(h.backupImport)))
+	}
+
+	if d.Subs != nil && d.SubRunner != nil && d.Servers != nil {
+		mux.Handle("GET /api/subs", protect(http.HandlerFunc(h.subsList)))
+		mux.Handle("POST /api/subs", protect(http.HandlerFunc(h.subsAdd)))
+		mux.Handle("PUT /api/subs/{id}", protect(http.HandlerFunc(h.subsUpdate)))
+		mux.Handle("DELETE /api/subs/{id}", protect(http.HandlerFunc(h.subsDelete)))
+		mux.Handle("POST /api/subs/{id}/refresh", protect(http.HandlerFunc(h.subsRefresh)))
+		// Background refreshes rebuild the config the same way the button does.
+		d.SubRunner.OnChanged = func(ctx context.Context) {
+			if res, applyErr := h.subsAutoApply(ctx); applyErr != "" {
+				slog.Warn("subs: auto-apply failed", "err", applyErr)
+			} else if res != nil {
+				slog.Info("subs: auto-applied", "servers", res.Servers, "applied", res.Applied)
+			}
+		}
 	}
 
 	mux.Handle("GET /api/transparent/policies", protect(http.HandlerFunc(h.transparentPolicies)))
@@ -983,10 +1004,21 @@ func (h *handlers) serversApply(w http.ResponseWriter, r *http.Request) {
 	var req serversApplyReq
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req)
 
+	resp, status, err := h.applyServers(r.Context(), req.Restart)
+	if err != nil {
+		writeErr(w, status, err)
+		return
+	}
+	writeJSON(w, status, resp)
+}
+
+// applyServers is the body of serversApply, shared with the subscription
+// auto-apply. Returns the HTTP status to report; a failed sing-box check is
+// status 400 with a nil error (the details are in resp.Check).
+func (h *handlers) applyServers(ctx context.Context, restart bool) (serversApplyResp, int, error) {
 	list, err := h.d.Servers.List()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
+		return serversApplyResp{}, http.StatusInternalServerError, err
 	}
 	tags := servers.UniqueTags(list)
 	primaryTag := servers.PrimaryTag(list, tags)
@@ -994,8 +1026,7 @@ func (h *handlers) serversApply(w http.ResponseWriter, r *http.Request) {
 	for i, e := range list {
 		obj := e.Server.ToOutbound(tags[i])
 		if obj == nil {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("server %q: unsupported type %q", e.Name, e.Type))
-			return
+			return serversApplyResp{}, http.StatusBadRequest, fmt.Errorf("server %q: unsupported type %q", e.Name, e.Type)
 		}
 		outs = append(outs, config.ProxyOutbound{Tag: tags[i], Object: obj})
 	}
@@ -1030,39 +1061,36 @@ func (h *handlers) serversApply(w http.ResponseWriter, r *http.Request) {
 		DefaultOutbound:   primaryTag,
 	}, outs)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
+		return serversApplyResp{}, http.StatusInternalServerError, err
 	}
 
 	resp := serversApplyResp{Servers: len(list)}
 	// Validate before writing.
 	if h.d.Checker != nil {
-		cr, cerr := h.d.Checker.CheckContent(r.Context(), body)
+		cr, cerr := h.d.Checker.CheckContent(ctx, body)
 		if cerr == nil {
 			resp.Check = cr
 			if !cr.OK {
-				writeJSON(w, http.StatusBadRequest, resp)
-				return
+				return resp, http.StatusBadRequest, nil
 			}
 		}
 	}
 
 	bk, err := h.d.Config.Write(body)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
+		return resp, http.StatusInternalServerError, err
 	}
 	resp.Applied = true
 	resp.Backup = bk.Path
 
-	if req.Restart && h.d.Service != nil {
-		ar, rerr := h.d.Service.Do(r.Context(), singbox.ActionRestart)
+	if restart && h.d.Service != nil {
+		ar, rerr := h.d.Service.Do(ctx, singbox.ActionRestart)
 		resp.Restart = &ar
 		if rerr != nil {
 			// Surface but don't fail the whole apply — config is already written.
 			resp.Check.Stderr = rerr.Error()
 		} else if primaryTag != "" {
-			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 			go func() { defer cancel(); h.reassertPrimary(ctx, primaryTag) }()
 		}
 	}
@@ -1075,9 +1103,9 @@ func (h *handlers) serversApply(w http.ResponseWriter, r *http.Request) {
 		fcfg := transparentConfigFromSettings(st, listCIDRs)
 		var ferr error
 		if fcfg.Mode == transparent.ModeOff {
-			ferr = h.d.Firewall.Clean(r.Context())
+			ferr = h.d.Firewall.Clean(ctx)
 		} else {
-			ferr = h.d.Firewall.Up(r.Context(), fcfg)
+			ferr = h.d.Firewall.Up(ctx, fcfg)
 		}
 		if ferr != nil {
 			resp.FirewallError = ferr.Error()
@@ -1086,11 +1114,165 @@ func (h *handlers) serversApply(w http.ResponseWriter, r *http.Request) {
 			// Seed the route ipset with resolved domain IPs (async + detached:
 			// DNS must not block/cancel with the HTTP response).
 			if h.d.Resolver != nil {
-				go h.d.Resolver.Refresh(context.WithoutCancel(r.Context()))
+				go h.d.Resolver.Refresh(context.WithoutCancel(ctx))
 			}
 		}
 	}
+	return resp, http.StatusOK, nil
+}
+
+// --- subscriptions ---
+
+func (h *handlers) subsList(w http.ResponseWriter, r *http.Request) {
+	list, err := h.d.Subs.List()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"subscriptions": list})
+}
+
+type subsReq struct {
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	Interval  int    `json:"interval"`
+	Enabled   *bool  `json:"enabled"`
+	AutoApply bool   `json:"auto_apply"`
+	UserAgent string `json:"user_agent"`
+}
+
+type subsRefreshResp struct {
+	subs.Result
+	Apply      *serversApplyResp `json:"apply,omitempty"`
+	ApplyError string            `json:"apply_error,omitempty"`
+}
+
+// subsAdd stores a subscription and fetches it right away. A first fetch that
+// fails drops the subscription again, so a mistyped URL doesn't linger.
+func (h *handlers) subsAdd(w http.ResponseWriter, r *http.Request) {
+	var req subsReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := subs.ValidateURL(req.URL); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	sub, err := h.d.Subs.Add(subs.Subscription{
+		Name:      strings.TrimSpace(req.Name),
+		URL:       strings.TrimSpace(req.URL),
+		Interval:  req.Interval,
+		Enabled:   true,
+		AutoApply: req.AutoApply,
+		UserAgent: strings.TrimSpace(req.UserAgent),
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	res, err := h.d.SubRunner.Refresh(r.Context(), sub.ID)
+	if err != nil {
+		_ = h.d.Subs.Delete(sub.ID)
+		_ = h.d.Servers.DeleteSub(sub.ID)
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	h.writeRefresh(w, r, res)
+}
+
+func (h *handlers) subsUpdate(w http.ResponseWriter, r *http.Request) {
+	var req subsReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := subs.ValidateURL(req.URL); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	sub, err := h.d.Subs.Get(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	newURL := strings.TrimSpace(req.URL)
+	if newURL != sub.URL {
+		sub.LastFetch = nil // fetch the new URL on the next tick
+	}
+	sub.Name = strings.TrimSpace(req.Name)
+	sub.URL = newURL
+	sub.Interval = req.Interval
+	sub.AutoApply = req.AutoApply
+	sub.UserAgent = strings.TrimSpace(req.UserAgent)
+	if req.Enabled != nil {
+		sub.Enabled = *req.Enabled
+	}
+	if err := h.d.Subs.Update(sub); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sub)
+}
+
+// subsDelete removes the subscription together with its servers. The running
+// config keeps them until the next apply.
+func (h *handlers) subsDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := h.d.Subs.Delete(id); err != nil {
+		code := http.StatusInternalServerError
+		if errors.Is(err, subs.ErrNotFound) {
+			code = http.StatusNotFound
+		}
+		writeErr(w, code, err)
+		return
+	}
+	if err := h.d.Servers.DeleteSub(id); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *handlers) subsRefresh(w http.ResponseWriter, r *http.Request) {
+	res, err := h.d.SubRunner.Refresh(r.Context(), r.PathValue("id"))
+	if err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, subs.ErrNotFound) {
+			code = http.StatusNotFound
+		}
+		writeErr(w, code, err)
+		return
+	}
+	h.writeRefresh(w, r, res)
+}
+
+func (h *handlers) writeRefresh(w http.ResponseWriter, r *http.Request, res subs.Result) {
+	resp := subsRefreshResp{Result: res}
+	if res.Changed && res.Sub != nil && res.Sub.AutoApply {
+		resp.Apply, resp.ApplyError = h.subsAutoApply(r.Context())
+	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// subsAutoApply rebuilds the config after a subscription changed the server
+// set. Only while sing-box runs: a stopped service stays stopped, and the new
+// servers go live with the next manual apply. Returns nil when skipped.
+func (h *handlers) subsAutoApply(ctx context.Context) (*serversApplyResp, string) {
+	if h.d.Service == nil {
+		return nil, ""
+	}
+	if running, _ := h.d.Service.IsRunning(ctx); !running {
+		return nil, ""
+	}
+	resp, _, err := h.applyServers(ctx, true)
+	if err != nil {
+		return &resp, err.Error()
+	}
+	if !resp.Applied {
+		return &resp, "конфиг не прошёл sing-box check"
+	}
+	return &resp, ""
 }
 
 // --- list sources ---
