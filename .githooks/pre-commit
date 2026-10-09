@@ -1,0 +1,22 @@
+#!/bin/sh
+# Pre-commit: линтеры по staged-файлам. Установка: make hooks
+set -e
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -n "$staged" ] || exit 0
+
+PATH="$PATH:$(go env GOPATH)/bin"
+
+if echo "$staged" | grep -q '\.go$'; then
+    if ! command -v golangci-lint >/dev/null 2>&1; then
+        echo "pre-commit: golangci-lint не найден — go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2" >&2
+        exit 1
+    fi
+    echo "pre-commit: golangci-lint run ./..."
+    golangci-lint run ./...
+fi
+
+if echo "$staged" | grep -q '^web/src/.*\.\(ts\|svelte\)$'; then
+    echo "pre-commit: svelte-check"
+    (cd web && npm run --silent check)
+fi
