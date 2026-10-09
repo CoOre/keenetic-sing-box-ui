@@ -6,7 +6,7 @@
   import SubsCard from "./SubsCard.svelte";
 
   const TYPE_LABEL: Record<string, string> = {
-    vless: "VLESS", trojan: "Trojan", shadowsocks: "SS", vmess: "VMess", hysteria2: "HY2",
+    vless: "VLESS", trojan: "Trojan", shadowsocks: "SS", vmess: "VMess", hysteria2: "HY2", tuic: "TUIC",
   };
 
   let servers = $state<Server[]>([]);
@@ -133,7 +133,7 @@
         <div class="empty">
           <div class="empty-icon"><Icon name="server" size={20} /></div>
           <h4>Серверов пока нет</h4>
-          <p>Добавьте первый сервер по share-ссылке (vless, trojan, ss, vmess, hy2), вручную или через подписку ниже.</p>
+          <p>Добавьте первый сервер по share-ссылке (vless, trojan, ss, vmess, hy2, tuic), вручную или через подписку ниже.</p>
           <button class="btn primary" style="margin-top:12px" onclick={() => (editor = "new")}><Icon name="plus" size={16} />Добавить сервер</button>
         </div>
       {:else}

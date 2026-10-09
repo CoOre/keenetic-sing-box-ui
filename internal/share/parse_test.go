@@ -219,11 +219,110 @@ func TestParseHysteria2_DefaultPortAndErrors(t *testing.T) {
 	}
 }
 
+func TestParseTUIC(t *testing.T) {
+	link := "tuic://b379c1d9-0b37-41b0-96b8-467c29b8ca9d:p%40ss@tuic.example.com:8443" +
+		"?congestion_control=bbr&udp_relay_mode=quic&alpn=h3,spdy/3.1&sni=real.example.com" +
+		"&allow_insecure=1&reduce_rtt=1#TUIC%20node"
+	s, err := ParseLink(link)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if s.Type != TypeTUIC || s.Server != "tuic.example.com" || s.ServerPort != 8443 ||
+		s.UUID != "b379c1d9-0b37-41b0-96b8-467c29b8ca9d" || s.Password != "p@ss" || s.Name != "TUIC node" {
+		t.Errorf("basics: %+v", s)
+	}
+	if s.CongestionControl != "bbr" || s.UDPRelayMode != "quic" || !s.ZeroRTT || !s.Insecure ||
+		s.SNI != "real.example.com" || len(s.ALPN) != 2 {
+		t.Errorf("params: %+v", s)
+	}
+	if err := s.Validate(); err != nil {
+		t.Errorf("validate: %v", err)
+	}
+
+	out := s.ToOutbound("proxy")
+	if out["type"] != "tuic" || out["uuid"] != s.UUID || out["password"] != "p@ss" ||
+		out["congestion_control"] != "bbr" || out["udp_relay_mode"] != "quic" || out["zero_rtt_handshake"] != true {
+		t.Errorf("outbound: %+v", out)
+	}
+	tls := out["tls"].(map[string]any)
+	if tls["enabled"] != true || tls["server_name"] != "real.example.com" || tls["insecure"] != true {
+		t.Errorf("tls: %+v", tls)
+	}
+	if _, ok := tls["utls"]; ok {
+		t.Error("tuic tls must not carry utls")
+	}
+	for _, k := range []string{"transport", "multiplex", "packet_encoding"} {
+		if _, ok := out[k]; ok {
+			t.Errorf("unexpected %q in tuic outbound", k)
+		}
+	}
+}
+
+func TestParseTUIC_DefaultsAndAliases(t *testing.T) {
+	s, err := ParseLink("tuic://B379C1D9B37041B096B8467C29B8CA9D@[2001:db8::1]?password=secret" +
+		"&congestion-control=NEW-RENO&udp-relay-mode=Native&insecure=true&disable_sni=1")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if s.Server != "2001:db8::1" || s.ServerPort != 443 || s.Password != "secret" ||
+		s.CongestionControl != "new_reno" || s.UDPRelayMode != "native" || !s.Insecure || !s.DisableSNI {
+		t.Errorf("aliases: %+v", s)
+	}
+	if err := s.Validate(); err != nil {
+		t.Errorf("validate: %v", err)
+	}
+	out := s.ToOutbound("p")
+	// No ALPN in the link: h3 is filled in, TUIC servers require it.
+	tls := out["tls"].(map[string]any)
+	if alpn := tls["alpn"].([]string); len(alpn) != 1 || alpn[0] != "h3" {
+		t.Errorf("default alpn: %v", alpn)
+	}
+	if tls["disable_sni"] != true {
+		t.Errorf("disable_sni: %+v", tls)
+	}
+	if s, _ := ParseLink("tuic://b379c1d9-0b37-41b0-96b8-467c29b8ca9d:p@h?congestion_control=newreno"); s == nil || s.CongestionControl != "new_reno" {
+		t.Errorf("newreno alias: %+v", s)
+	}
+	// Clash/Meta spellings and a "v"-prefixed version.
+	s, err = ParseLink("tuic://b379c1d9-0b37-41b0-96b8-467c29b8ca9d:p@h?version=v5&congestion-controller=bbr&reduce-rtt=true")
+	if err != nil || s.CongestionControl != "bbr" || !s.ZeroRTT {
+		t.Errorf("clash aliases: %+v %v", s, err)
+	}
+	if _, ok := out["zero_rtt_handshake"]; ok {
+		t.Error("zero_rtt_handshake must be omitted when off")
+	}
+
+	for _, bad := range []string{
+		"tuic://b379c1d9-0b37-41b0-96b8-467c29b8ca9d@host:443",             // v4-style, no password
+		"tuic://b379c1d9-0b37-41b0-96b8-467c29b8ca9d:p@host:443?version=4", // explicit v4
+		"tuic://:p@host:443",
+		"tuic://u:p@host:99999x",
+	} {
+		if _, err := ParseLink(bad); err == nil {
+			t.Errorf("%s: expected error", bad)
+		}
+	}
+}
+
+func TestParseInsecureTrue(t *testing.T) {
+	for _, link := range []string{
+		"hy2://secret@host:443?insecure=true",
+		"vless://b379c1d9-0b37-41b0-96b8-467c29b8ca9d@host:443?security=tls&allowInsecure=true",
+	} {
+		s, err := ParseLink(link)
+		if err != nil || !s.Insecure {
+			t.Errorf("%s: insecure not set: %+v %v", link, s, err)
+		}
+	}
+}
+
 func TestServerValidate(t *testing.T) {
 	ok := []Server{
 		{Type: TypeVLESS, Server: "h", ServerPort: 443, UUID: "u"},
 		{Type: TypeShadowsocks, Server: "h", ServerPort: 8388, Method: "aes-128-gcm", Password: "p"},
 		{Type: TypeHysteria2, Server: "h", Password: "p", ServerPorts: []string{"20000:30000"}},
+		{Type: TypeTUIC, Server: "h", ServerPort: 443, UUID: " b379c1d9-0b37-41b0-96b8-467c29b8ca9d ", Password: "p", CongestionControl: "bbr"},
+		{Type: TypeTUIC, Server: "h", ServerPort: 443, UUID: "b379c1d90b3741b096b8467c29b8ca9d", Password: "p"},
 	}
 	for _, s := range ok {
 		if err := s.Validate(); err != nil {
@@ -236,6 +335,9 @@ func TestServerValidate(t *testing.T) {
 		{Type: TypeShadowsocks, Server: "h", ServerPort: 1, Password: "p"},
 		{Type: TypeHysteria2, Server: "h", Password: "p"},
 		{Type: TypeHysteria2, Server: "h", ServerPort: 443, Password: "p", ServerPorts: []string{"20000-30000"}},
+		{Type: TypeTUIC, Server: "h", ServerPort: 443, UUID: "not-a-uuid", Password: "p"},
+		{Type: TypeTUIC, Server: "h", ServerPort: 443, UUID: "b379c1d9-0b3741b0-96b8-467c29b8ca9d", Password: "p"}, // partial dashes
+		{Type: TypeTUIC, Server: "h", ServerPort: 443, UUID: "b379c1d9-0b37-41b0-96b8-467c29b8ca9d"},
 		{Type: "wireguard", Server: "h", ServerPort: 1},
 	}
 	for _, s := range bad {
@@ -243,8 +345,28 @@ func TestServerValidate(t *testing.T) {
 			t.Errorf("%+v: expected error", s)
 		}
 	}
-	r := Server{Type: TypeVLESS, Server: "h", ServerPort: 1, UUID: "u", TLS: true, PublicKey: " "}
+	r := Server{Type: TypeVLESS, Server: "h", ServerPort: 1, UUID: " u", TLS: true, PublicKey: " "}
 	if err := r.Validate(); err != nil || r.PublicKey != "" {
 		t.Errorf("public_key not trimmed: %q %v", r.PublicKey, err)
+	}
+	// vless/vmess UUIDs feed the subscription server key: left as stored.
+	if r.UUID != " u" {
+		t.Errorf("vless uuid must not be trimmed: %q", r.UUID)
+	}
+	for _, u := range []string{
+		" b379c1d9-0b37-41b0-96b8-467c29b8ca9d ",
+		"{b379c1d9-0b37-41b0-96b8-467c29b8ca9d}",
+		"URN:UUID:b379c1d9-0b37-41b0-96b8-467c29b8ca9d",
+	} {
+		tu := Server{Type: TypeTUIC, Server: "h", ServerPort: 1, UUID: u, Password: "p"}
+		if err := tu.Validate(); err != nil || tu.UUID != "b379c1d9-0b37-41b0-96b8-467c29b8ca9d" {
+			t.Errorf("tuic uuid %q not canonicalized: %q %v", u, tu.UUID, err)
+		}
+	}
+	// Unknown tuning values degrade to defaults rather than rejecting the server.
+	tu := Server{Type: TypeTUIC, Server: "h", ServerPort: 1, UUID: "b379c1d9-0b37-41b0-96b8-467c29b8ca9d",
+		Password: "p", CongestionControl: "bbr2", UDPRelayMode: "quic_stream"}
+	if err := tu.Validate(); err != nil || tu.CongestionControl != "" || tu.UDPRelayMode != "" {
+		t.Errorf("unknown tuning not defaulted: %+v %v", tu, err)
 	}
 }

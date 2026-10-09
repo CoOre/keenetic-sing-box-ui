@@ -252,11 +252,13 @@ func TestAssemble_MultipleServers_AddsAuto(t *testing.T) {
 	}
 }
 
-func TestAssemble_MultiplexSkipsHysteria2(t *testing.T) {
+func TestAssemble_MultiplexSkipsQUIC(t *testing.T) {
 	vless := map[string]any{"type": "vless", "server": "1.2.3.4", "server_port": 443, "uuid": "u"}
 	hy2 := map[string]any{"type": "hysteria2", "server": "5.6.7.8", "server_port": 443, "password": "p"}
+	tuic := map[string]any{"type": "tuic", "server": "9.9.9.9", "server_port": 443, "uuid": "u", "password": "p"}
+	ss := map[string]any{"type": "shadowsocks", "server": "8.8.8.8", "server_port": 8388, "method": "aes-128-gcm", "password": "p"}
 	body, err := Assemble(AssembleOptions{InboundMode: InboundTun, Multiplex: true},
-		[]ProxyOutbound{{Tag: "v", Object: vless}, {Tag: "h", Object: hy2}})
+		[]ProxyOutbound{{Tag: "v", Object: vless}, {Tag: "h", Object: hy2}, {Tag: "t", Object: tuic}, {Tag: "s", Object: ss}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,13 +270,13 @@ func TestAssemble_MultiplexSkipsHysteria2(t *testing.T) {
 		m := o.(map[string]any)
 		_, hasMux := m["multiplex"]
 		switch m["tag"] {
-		case "v":
+		case "v", "s":
 			if !hasMux {
-				t.Error("vless: multiplex missing")
+				t.Errorf("%s: multiplex missing", m["type"])
 			}
-		case "h":
+		case "h", "t":
 			if hasMux {
-				t.Error("hysteria2: multiplex must not be set")
+				t.Errorf("%s: multiplex must not be set on QUIC outbounds", m["type"])
 			}
 		}
 	}

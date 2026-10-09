@@ -10,7 +10,7 @@ import (
 )
 
 // ParseLink parses a single proxy share link into a Server. Supported schemes:
-// vless://, trojan://, ss://, vmess://, hysteria2:// (alias hy2://).
+// vless://, trojan://, ss://, vmess://, hysteria2:// (alias hy2://), tuic://.
 func ParseLink(raw string) (*Server, error) {
 	raw = strings.TrimSpace(raw)
 	switch {
@@ -24,8 +24,10 @@ func ParseLink(raw string) (*Server, error) {
 		return parseVMess(raw)
 	case strings.HasPrefix(raw, "hysteria2://"), strings.HasPrefix(raw, "hy2://"):
 		return parseHysteria2(raw)
+	case strings.HasPrefix(raw, "tuic://"):
+		return parseTUIC(raw)
 	default:
-		return nil, fmt.Errorf("unsupported or unrecognized link (expected vless/trojan/ss/vmess/hysteria2://)")
+		return nil, fmt.Errorf("unsupported or unrecognized link (expected vless/trojan/ss/vmess/hysteria2/tuic://)")
 	}
 }
 
@@ -239,9 +241,7 @@ func parseHysteria2(raw string) (*Server, error) {
 	}
 
 	s.SNI = q.Get("sni")
-	if q.Get("insecure") == "1" || q.Get("allowInsecure") == "1" {
-		s.Insecure = true
-	}
+	s.Insecure = anyTrue(q, "insecure", "allowInsecure")
 	if alpn := q.Get("alpn"); alpn != "" {
 		s.ALPN = strings.Split(alpn, ",")
 	}
@@ -258,6 +258,74 @@ func parseHysteria2(raw string) (*Server, error) {
 		return nil, fmt.Errorf("hysteria2: missing auth or server")
 	}
 	return s, nil
+}
+
+// parseTUIC handles tuic://uuid:password@host:port?params#name (TUIC v5, the
+// v2rayN/NekoBox form). Parameter spellings vary between clients, so the
+// common aliases are accepted. TUIC v4 (token auth) is rejected: sing-box
+// speaks only v5.
+func parseTUIC(raw string) (*Server, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse tuic: %w", err)
+	}
+	s := &Server{Type: TypeTUIC, Name: frag(u), TLS: true}
+	q := u.Query()
+	if u.User != nil {
+		s.UUID = u.User.Username()
+		s.Password, _ = u.User.Password()
+	}
+	if s.Password == "" {
+		s.Password = q.Get("password")
+	}
+	if v := strings.TrimPrefix(strings.ToLower(q.Get("version")), "v"); v != "" && v != "5" {
+		return nil, fmt.Errorf("tuic: версия %s не поддерживается (только v5)", v)
+	}
+	if err := setHostPort(s, u); err != nil {
+		return nil, err
+	}
+	if s.ServerPort == 0 {
+		s.ServerPort = 443
+	}
+
+	s.SNI = firstNonEmpty(q.Get("sni"), q.Get("peer"))
+	if alpn := q.Get("alpn"); alpn != "" {
+		s.ALPN = strings.Split(alpn, ",")
+	}
+	s.Insecure = anyTrue(q, "allow_insecure", "allowInsecure", "insecure", "skip-cert-verify")
+	s.DisableSNI = anyTrue(q, "disable_sni", "disable-sni")
+	s.CongestionControl = normalizeEnum(firstNonEmpty(
+		q.Get("congestion_control"), q.Get("congestion-control"),
+		q.Get("congestion_controller"), q.Get("congestion-controller")))
+	if s.CongestionControl == "newreno" {
+		s.CongestionControl = "new_reno"
+	}
+	s.UDPRelayMode = normalizeEnum(firstNonEmpty(q.Get("udp_relay_mode"), q.Get("udp-relay-mode")))
+	s.ZeroRTT = anyTrue(q, "zero_rtt_handshake", "reduce_rtt", "reduce-rtt", "zero-rtt")
+
+	if s.UUID == "" || s.Server == "" {
+		return nil, fmt.Errorf("tuic: missing uuid or server")
+	}
+	if s.Password == "" {
+		return nil, fmt.Errorf("tuic: нет пароля — похоже на TUIC v4, поддерживается только v5")
+	}
+	return s, nil
+}
+
+// normalizeEnum maps client spellings of an option value (NEW-RENO,
+// new-reno) onto the sing-box form (new_reno).
+func normalizeEnum(v string) string {
+	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(v)), "-", "_")
+}
+
+// anyTrue reports whether any of the query keys is set to "1" or "true".
+func anyTrue(q url.Values, keys ...string) bool {
+	for _, k := range keys {
+		if v := strings.ToLower(q.Get(k)); v == "1" || v == "true" {
+			return true
+		}
+	}
+	return false
 }
 
 // applyHy2Ports reads a comma-separated port spec: the first single port
@@ -340,7 +408,7 @@ func applyTLSQuery(s *Server, q url.Values) {
 	if alpn := q.Get("alpn"); alpn != "" {
 		s.ALPN = strings.Split(alpn, ",")
 	}
-	if q.Get("allowInsecure") == "1" || q.Get("insecure") == "1" {
+	if anyTrue(q, "allowInsecure", "insecure") {
 		s.Insecure = true
 	}
 }

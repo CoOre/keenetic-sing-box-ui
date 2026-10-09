@@ -1,5 +1,5 @@
 // Package share parses proxy "share links" (vless://, trojan://, ss://,
-// vmess://) into a unified Server model and builds sing-box outbound objects
+// vmess://, hysteria2://, tuic://) into a unified Server model and builds sing-box outbound objects
 // from it. This lets the UI accept a pasted link or form fields instead of
 // requiring hand-written sing-box JSON.
 package share
@@ -11,7 +11,21 @@ const (
 	TypeShadowsocks = "shadowsocks"
 	TypeVMess       = "vmess"
 	TypeHysteria2   = "hysteria2"
+	TypeTUIC        = "tuic"
 )
+
+// SupportsMultiplex reports whether a sing-box outbound type has the
+// "multiplex" field. QUIC-based ones (hysteria2, tuic) don't, and sing-box
+// check rejects it there — so this is an allow-list: a protocol added here
+// later stays without mux until it is listed explicitly.
+func SupportsMultiplex(typ string) bool {
+	switch typ {
+	case TypeVLESS, TypeVMess, TypeTrojan, TypeShadowsocks:
+		return true
+	default:
+		return false
+	}
+}
 
 // Server is a flattened, form-friendly representation of a single proxy
 // server. Fields not relevant to a given Type are left empty. It round-trips
@@ -23,8 +37,8 @@ type Server struct {
 	ServerPort int    `json:"server_port"`
 
 	// Credentials
-	UUID     string `json:"uuid,omitempty"`     // vless, vmess
-	Password string `json:"password,omitempty"` // trojan, shadowsocks, hysteria2 (auth)
+	UUID     string `json:"uuid,omitempty"`     // vless, vmess, tuic
+	Password string `json:"password,omitempty"` // trojan, shadowsocks, hysteria2 (auth), tuic
 	Method   string `json:"method,omitempty"`   // shadowsocks
 	AlterID  int    `json:"alter_id,omitempty"` // vmess
 	Flow     string `json:"flow,omitempty"`     // vless
@@ -52,6 +66,12 @@ type Server struct {
 	UpMbps       int      `json:"up_mbps,omitempty"`      // 0 = BBR
 	DownMbps     int      `json:"down_mbps,omitempty"`
 	ObfsPassword string   `json:"obfs_password,omitempty"` // salamander obfs when set
+
+	// TUIC v5
+	CongestionControl string `json:"congestion_control,omitempty"` // cubic (default), new_reno, bbr
+	UDPRelayMode      string `json:"udp_relay_mode,omitempty"`     // native (default), quic
+	ZeroRTT           bool   `json:"zero_rtt_handshake,omitempty"`
+	DisableSNI        bool   `json:"disable_sni,omitempty"`
 }
 
 // ToOutbound builds a sing-box outbound object for this server, using the
@@ -68,6 +88,8 @@ func (s *Server) ToOutbound(tag string) map[string]any {
 		return s.vmessOutbound(tag)
 	case TypeHysteria2:
 		return s.hysteria2Outbound(tag)
+	case TypeTUIC:
+		return s.tuicOutbound(tag)
 	default:
 		return nil
 	}
@@ -176,6 +198,39 @@ func (s *Server) hysteria2Outbound(tag string) map[string]any {
 	}
 	if s.ObfsPassword != "" {
 		o["obfs"] = map[string]any{"type": "salamander", "password": s.ObfsPassword}
+	}
+	return o
+}
+
+// tuicOutbound builds a TUIC v5 outbound. Like hysteria2 it is QUIC: TLS is
+// mandatory, no uTLS/REALITY, transport or multiplex.
+func (s *Server) tuicOutbound(tag string) map[string]any {
+	tls := s.quicTLSBlock()
+	// sing-box sends no ALPN by default, while TUIC servers almost always
+	// require h3 — the QUIC handshake would fail with "no application protocol".
+	if len(s.ALPN) == 0 {
+		tls["alpn"] = []string{"h3"}
+	}
+	if s.DisableSNI {
+		tls["disable_sni"] = true
+	}
+	o := map[string]any{
+		"type":        TypeTUIC,
+		"tag":         tag,
+		"server":      s.Server,
+		"server_port": s.ServerPort,
+		"uuid":        s.UUID,
+		"password":    s.Password,
+		"tls":         tls,
+	}
+	if s.CongestionControl != "" {
+		o["congestion_control"] = s.CongestionControl
+	}
+	if s.UDPRelayMode != "" {
+		o["udp_relay_mode"] = s.UDPRelayMode
+	}
+	if s.ZeroRTT {
+		o["zero_rtt_handshake"] = true
 	}
 	return o
 }

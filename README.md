@@ -14,7 +14,7 @@
 Возможности:
 
 - управление серверами/outbound'ами: VLESS (Reality), Trojan, Shadowsocks,
-  VMess и Hysteria 2 (obfs salamander, port hopping); импорт share-ссылок,
+  VMess, Hysteria 2 (obfs salamander, port hopping) и TUIC v5; импорт share-ссылок,
   выбор основного сервера или автовыбор самого быстрого, проверка конфига;
 - сборка и применение конфигурации sing-box;
 - прозрачный проксинг с селективной маршрутизацией по доменам и CIDR:

@@ -95,7 +95,7 @@ func ParseBody(body []byte) (servers []share.Server, skipped int, err error) {
 	}
 	if len(servers) == 0 {
 		if skipped > 0 {
-			return nil, skipped, fmt.Errorf("ни одна из %d ссылок не распознана (поддерживаются vless, trojan, ss, vmess, hysteria2)", skipped)
+			return nil, skipped, fmt.Errorf("ни одна из %d ссылок не распознана (поддерживаются vless, trojan, ss, vmess, hysteria2, tuic)", skipped)
 		}
 		return nil, 0, unsupportedFormat(text)
 	}

@@ -16,6 +16,7 @@
     { v: "shadowsocks", label: "Shadowsocks" },
     { v: "vmess", label: "VMess" },
     { v: "hysteria2", label: "Hysteria 2" },
+    { v: "tuic", label: "TUIC" },
   ];
   const SS_METHODS = [
     "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305",
@@ -23,6 +24,10 @@
   ];
 
   const FINGERPRINTS = ["chrome", "firefox", "safari", "ios", "edge", "random", "randomized"];
+  const CONGESTION = ["cubic", "new_reno", "bbr"];
+  const QUIC_TYPES: ServerType[] = ["hysteria2", "tuic"];
+  const PASSWORD_TYPES: ServerType[] = ["trojan", "hysteria2", "tuic"];
+  const UDP_RELAY = ["native", "quic"];
 
   function blank(): Server {
     return { name: "", type: "vless", server: "", server_port: 443, tls: true, network: "" };
@@ -42,15 +47,20 @@
   let tlsOpen = $state(false);
   let transportOpen = $state(false);
   let hy2Open = $state(false);
+  let tuicOpen = $state(false);
 
   const editing = $derived(!!form.id);
   const t = $derived(form.type);
   const hasTLS = $derived(t !== "shadowsocks");
-  const tlsForced = $derived(t === "trojan" || t === "hysteria2");
+  // Password-auth protocols other than Shadowsocks; all of them mandate TLS.
+  const hasPassword = $derived(PASSWORD_TYPES.includes(t));
+  const tlsForced = $derived(hasPassword);
   const tlsOn = $derived(tlsForced || !!form.tls);
   const hasUTLS = $derived(t === "vless" || t === "vmess" || t === "trojan");
   const hasTransport = $derived(t === "vless" || t === "vmess" || t === "trojan");
   const isHy2 = $derived(t === "hysteria2");
+  const isTUIC = $derived(t === "tuic");
+  const hasUUID = $derived(t === "vless" || t === "vmess" || t === "tuic");
 
   function load(s: Server) {
     form = { ...blank(), ...s };
@@ -58,9 +68,10 @@
     alpnText = (s.alpn ?? []).join(", ");
     portsText = (s.server_ports ?? []).map((p) => p.replace(":", "-")).join(", ");
     // Open only the sections that carry non-default values.
-    tlsOpen = !!(s.sni || s.alpn?.length || s.insecure || s.fingerprint || reality);
+    tlsOpen = !!(s.sni || s.alpn?.length || s.insecure || s.fingerprint || s.disable_sni || reality);
     transportOpen = !!s.network;
     hy2Open = !!(s.obfs_password || s.server_ports?.length || s.up_mbps || s.down_mbps);
+    tuicOpen = !!(s.congestion_control || s.udp_relay_mode || s.zero_rtt_handshake);
   }
 
   $effect.pre(() => {
@@ -69,8 +80,11 @@
   });
 
   function setType(v: ServerType) {
+    // ALPN differs between TCP (h2, http/1.1) and QUIC (h3) protocols: a stale
+    // value breaks the QUIC handshake and hides the h3 default for TUIC.
+    if (QUIC_TYPES.includes(v) !== QUIC_TYPES.includes(form.type)) alpnText = "";
     form.type = v;
-    if (v === "trojan" || v === "hysteria2") form.tls = true;
+    if (PASSWORD_TYPES.includes(v)) form.tls = true;
     if (v === "shadowsocks" && !form.method) form.method = SS_METHODS[0];
   }
 
@@ -109,10 +123,10 @@
     const str = (v?: string) => (v ?? "").trim() || undefined;
     const num = (v?: number) => Number(v) > 0 ? Number(v) : undefined;
 
-    if (t === "vless" || t === "vmess") out.uuid = str(f.uuid);
+    if (hasUUID) out.uuid = str(f.uuid);
     if (t === "vless") out.flow = str(f.flow);
     if (t === "vmess") out.alter_id = num(f.alter_id);
-    if (t === "trojan" || t === "shadowsocks" || t === "hysteria2") out.password = f.password || undefined;
+    if (hasPassword || t === "shadowsocks") out.password = f.password || undefined;
     if (t === "shadowsocks") out.method = f.method;
 
     if (hasTLS && tlsOn) {
@@ -142,6 +156,12 @@
       out.down_mbps = num(f.down_mbps);
       out.obfs_password = f.obfs_password || undefined;
     }
+    if (isTUIC) {
+      out.congestion_control = str(f.congestion_control);
+      out.udp_relay_mode = str(f.udp_relay_mode);
+      if (f.zero_rtt_handshake) out.zero_rtt_handshake = true;
+      if (f.disable_sni) out.disable_sni = true;
+    }
     return out;
   }
 
@@ -156,7 +176,7 @@
 
   const tlsHint = $derived.by(() => {
     if (!tlsOn) return "выключен";
-    const parts = [form.sni && `SNI ${form.sni}`, t === "vless" && reality && "Reality", form.insecure && "insecure"];
+    const parts = [form.sni && `SNI ${form.sni}`, t === "vless" && reality && "Reality", isTUIC && form.disable_sni && "без SNI", form.insecure && "insecure"];
     return parts.filter(Boolean).join(" · ") || "включён";
   });
   const transportHint = $derived(
@@ -167,6 +187,14 @@
       form.obfs_password && "obfs salamander",
       portsText.trim() && `порты ${portsText.trim()}`,
       (form.up_mbps || form.down_mbps) ? `${form.up_mbps || "–"}/${form.down_mbps || "–"} Мбит/с` : "BBR",
+    ];
+    return parts.filter(Boolean).join(" · ");
+  });
+  const tuicHint = $derived.by(() => {
+    const parts = [
+      form.congestion_control || "cubic",
+      `UDP ${form.udp_relay_mode || "native"}`,
+      form.zero_rtt_handshake && "0-RTT",
     ];
     return parts.filter(Boolean).join(" · ");
   });
@@ -188,7 +216,7 @@
         <div class="row" style="gap:8px">
           <!-- svelte-ignore a11y_autofocus -->
           <input class="input mono" bind:value={link} autofocus
-            placeholder="vless:// · trojan:// · ss:// · vmess:// · hy2://"
+            placeholder="vless:// · trojan:// · ss:// · vmess:// · hy2:// · tuic://"
             onpaste={onPaste}
             onkeydown={(e) => e.key === "Enter" && parseLink()} />
           <button class="btn" disabled={!link.trim() || busy === "parse"} onclick={() => parseLink()}>
@@ -219,7 +247,7 @@
           <div class="field"><label for="srv-port">Порт</label><input id="srv-port" class="input mono" type="number" min="1" max="65535" bind:value={form.server_port} /></div>
         </div>
 
-        {#if t === "vless" || t === "vmess"}
+        {#if hasUUID}
           <div class="field"><label for="srv-uuid">UUID</label><input id="srv-uuid" class="input mono" bind:value={form.uuid} placeholder="00000000-0000-…" /></div>
         {/if}
         {#if t === "shadowsocks"}
@@ -233,7 +261,7 @@
             </div>
             <div class="field"><label for="srv-pass">Пароль</label><input id="srv-pass" class="input mono" bind:value={form.password} /></div>
           </div>
-        {:else if t === "trojan" || t === "hysteria2"}
+        {:else if hasPassword}
           <div class="field">
             <label for="srv-pass">Пароль {#if isHy2}<span class="hint">auth</span>{/if}</label>
             <input id="srv-pass" class="input mono" bind:value={form.password} />
@@ -268,6 +296,34 @@
             </FormSection>
           {/if}
 
+          {#if isTUIC}
+            <FormSection title="TUIC" hint={tuicHint} bind:open={tuicOpen}>
+              <div class="grid-2">
+                <div class="field">
+                  <label for="tu-cc">Congestion control</label>
+                  <select id="tu-cc" class="select" bind:value={form.congestion_control}>
+                    <option value="">по умолчанию (cubic)</option>
+                    {#each CONGESTION as c (c)}<option>{c}</option>{/each}
+                    {#if form.congestion_control && !CONGESTION.includes(form.congestion_control)}<option>{form.congestion_control}</option>{/if}
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="tu-udp">Передача UDP</label>
+                  <select id="tu-udp" class="select" bind:value={form.udp_relay_mode}>
+                    <option value="">по умолчанию (native)</option>
+                    <option value="native">native</option>
+                    <option value="quic">quic — без потерь</option>
+                    {#if form.udp_relay_mode && !UDP_RELAY.includes(form.udp_relay_mode)}<option>{form.udp_relay_mode}</option>{/if}
+                  </select>
+                </div>
+              </div>
+              <div class="toggle-row">
+                <div class="toggle-text"><b>0-RTT</b><span>Быстрее переподключение, но уязвимо к replay-атакам</span></div>
+                <button class={"toggle" + (form.zero_rtt_handshake ? " on" : "")} onclick={() => (form.zero_rtt_handshake = !form.zero_rtt_handshake)} role="switch" aria-checked={!!form.zero_rtt_handshake} aria-label="0-RTT"></button>
+              </div>
+            </FormSection>
+          {/if}
+
           {#if hasTLS}
             <FormSection title={t === "vless" ? "TLS и Reality" : "TLS"} hint={tlsHint} bind:open={tlsOpen}>
               {#if !tlsForced}
@@ -294,6 +350,12 @@
                 </div>
                 {#if hasUTLS}
                   <div class="field"><label for="tls-alpn">ALPN <span class="hint">через запятую</span></label><input id="tls-alpn" class="input mono" bind:value={alpnText} placeholder="h2, http/1.1" /></div>
+                {/if}
+                {#if isTUIC}
+                  <div class="toggle-row">
+                    <div class="toggle-text"><b>Не отправлять SNI</b><span>Для серверов, ожидающих рукопожатие без имени</span></div>
+                    <button class={"toggle" + (form.disable_sni ? " on" : "")} onclick={() => (form.disable_sni = !form.disable_sni)} role="switch" aria-checked={!!form.disable_sni} aria-label="Disable SNI"></button>
+                  </div>
                 {/if}
                 <div class="toggle-row">
                   <div class="toggle-text"><b>Не проверять сертификат</b><span>Для самоподписанных сертификатов</span></div>

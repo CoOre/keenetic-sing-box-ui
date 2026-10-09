@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+
+	"github.com/CoOre/keenetic-sing-box-ui/internal/share"
 )
 
 // Inbound modes for an assembled router config.
@@ -118,9 +120,7 @@ func Assemble(opts AssembleOptions, servers []ProxyOutbound) ([]byte, error) {
 		if tag == "" {
 			continue
 		}
-		// hysteria2 is QUIC and has no multiplex field; sing-box check would
-		// reject it.
-		if opts.Multiplex && obj["type"] != "hysteria2" {
+		if typ, _ := obj["type"].(string); opts.Multiplex && share.SupportsMultiplex(typ) {
 			// Collapse many short-lived proxy connections (e.g. Telegram's DC
 			// fan-out) onto a few persistent tunnels, removing the per-connection
 			// TLS handshake through the proxy chain. Server must accept sing-box mux.

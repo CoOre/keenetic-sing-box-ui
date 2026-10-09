@@ -133,6 +133,11 @@ export interface Server {
   up_mbps?: number;
   down_mbps?: number;
   obfs_password?: string;
+  // tuic
+  congestion_control?: string;
+  udp_relay_mode?: string;
+  zero_rtt_handshake?: boolean;
+  disable_sni?: boolean;
 }
 
 export interface ServersState {
@@ -147,7 +152,7 @@ export interface ServerPrimaryResult {
   live_error?: string;
 }
 
-export type ServerType = "vless" | "trojan" | "shadowsocks" | "vmess" | "hysteria2";
+export type ServerType = "vless" | "trojan" | "shadowsocks" | "vmess" | "hysteria2" | "tuic";
 
 export interface ServersApplyResult {
   check: CheckResult;
