@@ -17,6 +17,7 @@ import type {
   Subscription,
   SubInput,
   SubRefreshResult,
+  UpdateChangelog,
   UpdateStatus,
   UpdateStatusResp,
   TraceReport,
@@ -310,6 +311,9 @@ export const api = {
   // Kicks off a detached install; outcome arrives via updateStatus polling.
   updateApply(target: "singbox" | "ui"): Promise<{ target: string; started: boolean }> {
     return request("POST", "/api/update/apply", { target });
+  },
+  updateChangelog(target: "singbox" | "ui"): Promise<UpdateChangelog> {
+    return request("GET", `/api/update/changelog?target=${target}`);
   },
 
   // --- full backup ---

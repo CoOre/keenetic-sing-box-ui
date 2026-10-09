@@ -106,6 +106,7 @@ func Register(mux *http.ServeMux, a *auth.Authenticator, d *Deps) {
 		mux.Handle("GET /api/update/status", protect(http.HandlerFunc(h.updateStatus)))
 		mux.Handle("POST /api/update/check", protect(http.HandlerFunc(h.updateCheck)))
 		mux.Handle("POST /api/update/apply", protect(http.HandlerFunc(h.updateApply)))
+		mux.Handle("GET /api/update/changelog", protect(http.HandlerFunc(h.updateChangelog)))
 	}
 
 	if d.Backup != nil {
@@ -1659,6 +1660,22 @@ func (h *handlers) updateStatus(w http.ResponseWriter, r *http.Request) {
 // status.
 func (h *handlers) updateCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.d.Update.Check(r.Context()))
+}
+
+// updateChangelog returns release notes for ?target=singbox|ui: the
+// versions after the installed one, or the installed version's own notes.
+func (h *handlers) updateChangelog(w http.ResponseWriter, r *http.Request) {
+	target := r.URL.Query().Get("target")
+	if target != "singbox" && target != "ui" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown target %q (want singbox|ui)", target))
+		return
+	}
+	cl, err := h.d.Update.Changelog(r.Context(), target)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, cl)
 }
 
 type updateApplyReq struct {

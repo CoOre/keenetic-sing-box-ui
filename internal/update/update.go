@@ -17,6 +17,7 @@ import (
 
 	"github.com/CoOre/keenetic-sing-box-ui/internal/cmdrun"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/config"
+	"github.com/CoOre/keenetic-sing-box-ui/internal/proxyretry"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/settings"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/singbox"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/system"
@@ -63,11 +64,19 @@ type Manager struct {
 	UIInit     string // path to the UI's own init script (self-restart)
 	UIInitrc   string // fallback restart script (/opt/etc/initrc, install-router.sh setups)
 	BaseURL    string // GitHub API base override for tests; "" = api.github.com
-	Log        *slog.Logger
+	// SingBoxChangelogURL overrides SingBoxChangelogURL (tests).
+	SingBoxChangelogURL string
+	Log                 *slog.Logger
 
-	mu       sync.Mutex
-	status   Status
-	updating bool
+	mu         sync.Mutex
+	status     Status
+	updating   bool
+	changelogs map[string]changelogCache // by target, see Changelog
+	inflight   map[string]*changelogCall // by target, see cachedReleases
+
+	proxyMu   sync.Mutex
+	proxyTr   *http.Transport // shared by ProxiedClient, see proxyTransport
+	proxyPort int
 }
 
 // Status returns the cached result of the last check without touching the
@@ -254,27 +263,33 @@ func (m *Manager) finishUpdate(what string, err error) {
 // and the router's own egress is not captured by the transparent firewall
 // rules — so the retry explicitly tunnels through sing-box.
 func (m *Manager) install(ctx context.Context, gh *singbox.Github, asset singbox.Asset) error {
-	err := gh.Install(ctx, asset)
-	if err == nil {
-		return nil
-	}
-	proxied := m.ProxiedClient()
-	if proxied == nil {
-		return err
-	}
-	m.Log.Info("direct download failed, retrying via local sing-box proxy", "err", err)
-	ghp := *gh
-	ghp.HTTP = proxied
-	if perr := ghp.Install(ctx, asset); perr != nil {
-		return fmt.Errorf("direct: %v; via proxy: %w", err, perr)
-	}
-	return nil
+	// No per-attempt timeout: the archive is tens of MB on a slow uplink.
+	return m.withProxyFallback(ctx, 0, gh.HTTP, func(ctx context.Context, c *http.Client) error {
+		g := *gh
+		g.HTTP = c
+		return g.Install(ctx, asset)
+	})
+}
+
+// withProxyFallback is proxyretry.Do with this manager's proxy and logging.
+func (m *Manager) withProxyFallback(ctx context.Context, timeout time.Duration, direct *http.Client,
+	fn func(context.Context, *http.Client) error) error {
+	_, err := proxyretry.Do(ctx, timeout, direct, m.ProxiedClient, func(err error) {
+		m.Log.Info("direct request failed, retrying via local sing-box proxy", "err", err)
+	}, fn)
+	return err
 }
 
 // ProxiedClient returns an HTTP client tunnelling through the local sing-box
 // proxy inbound, or nil if none is listening: the mixed inbound itself in
 // socks mode, the companion loopback inbound in the transparent modes.
+//
+// The transport is shared per port: a fresh one per call would leave its
+// keep-alive connection (and two goroutines) behind after every request.
 func (m *Manager) ProxiedClient() *http.Client {
+	if m.Settings == nil {
+		return nil
+	}
 	s, err := m.Settings.Get()
 	if err != nil {
 		return nil
@@ -291,11 +306,27 @@ func (m *Manager) ProxiedClient() *http.Client {
 	if !transparent.ProxyListening(port) {
 		return nil
 	}
-	proxyURL, perr := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", port))
-	if perr != nil {
-		return nil
+	return &http.Client{Transport: m.proxyTransport(port)}
+}
+
+func (m *Manager) proxyTransport(port int) *http.Transport {
+	m.proxyMu.Lock()
+	defer m.proxyMu.Unlock()
+	if m.proxyTr != nil && m.proxyPort == port {
+		return m.proxyTr
 	}
-	return &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	if m.proxyTr != nil {
+		m.proxyTr.CloseIdleConnections()
+	}
+	proxyURL := &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", port)}
+	m.proxyTr = &http.Transport{
+		Proxy:               http.ProxyURL(proxyURL),
+		IdleConnTimeout:     30 * time.Second,
+		MaxIdleConnsPerHost: 2,
+		TLSHandshakeTimeout: 15 * time.Second,
+	}
+	m.proxyPort = port
+	return m.proxyTr
 }
 
 // ScheduleSelfRestart spawns a detached shell that restarts this service via

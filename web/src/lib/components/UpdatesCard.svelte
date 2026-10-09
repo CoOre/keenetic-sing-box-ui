@@ -1,7 +1,10 @@
 <script lang="ts">
   import { api } from "../api";
-  import type { UpdateStatus, UpdateComponent } from "../types";
+  import type { UpdateStatus, UpdateComponent, UpdateChangelog } from "../types";
+  import { renderMarkdown } from "../markdown";
   import Icon from "./Icon.svelte";
+
+  type Target = "singbox" | "ui";
 
   let status = $state<UpdateStatus | null>(null);
   let autoSingbox = $state(false);
@@ -15,6 +18,47 @@
 
   const INTERVALS = [1, 3, 6, 12, 24, 48];
 
+  // «Что нового»: release notes per component, fetched on first expand and
+  // dropped whenever versions may have changed (check/install).
+  let notesOpen = $state<Record<string, boolean>>({});
+  let notes = $state<Record<string, UpdateChangelog | undefined>>({});
+  let notesErr = $state<Record<string, string>>({});
+  let notesLoading = $state<Record<string, boolean>>({});
+  // Request generation per target: a response that lost the race to a newer
+  // request (or to resetNotes) is dropped.
+  const notesSeq: Record<string, number> = {};
+  const nextSeq = (t: Target) => (notesSeq[t] = (notesSeq[t] ?? 0) + 1);
+
+  async function loadNotes(t: Target) {
+    const seq = nextSeq(t);
+    notesLoading[t] = true;
+    notesErr[t] = "";
+    try {
+      const cl = await api.updateChangelog(t);
+      if (seq === notesSeq[t]) notes[t] = cl;
+    } catch (e) {
+      if (seq === notesSeq[t]) notesErr[t] = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (seq === notesSeq[t]) notesLoading[t] = false;
+    }
+  }
+
+  function toggleNotes(t: Target) {
+    notesOpen[t] = !notesOpen[t];
+    if (notesOpen[t] && !notes[t] && !notesLoading[t]) loadNotes(t);
+  }
+
+  function resetNotes() {
+    notes = {};
+    for (const t of ["singbox", "ui"] as Target[]) {
+      if (notesOpen[t]) loadNotes(t);
+      else {
+        nextSeq(t);
+        notesLoading[t] = false;
+      }
+    }
+  }
+
   async function load() {
     loading = true;
     try {
@@ -23,6 +67,7 @@
       autoSingbox = r.auto_update_singbox;
       autoUI = r.auto_update_ui;
       checkHours = r.update_check_hours;
+      resetNotes();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -36,6 +81,7 @@
     busy = "check"; notice = ""; error = "";
     try {
       status = await api.updateCheck();
+      resetNotes();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally { busy = ""; }
@@ -153,8 +199,8 @@
       <p class="hint-text">Загрузка…</p>
     {:else}
       {#each [
-        { key: "singbox", title: "Ядро sing-box", c: status?.sing_box },
-        { key: "ui", title: "Веб-интерфейс", c: status?.ui },
+        { key: "singbox" as Target, title: "Ядро sing-box", c: status?.sing_box },
+        { key: "ui" as Target, title: "Веб-интерфейс", c: status?.ui },
       ] as row}
         <div class="upd-row">
           <div class="upd-text">
@@ -164,6 +210,15 @@
               {#if row.c?.latest && row.c.latest !== row.c.current} → {row.c.latest}{/if}
             </span>
           </div>
+          {#if row.c?.current || row.c?.latest}
+            <button
+              class={"btn sm ghost" + (notesOpen[row.key] ? " on" : "")}
+              onclick={() => toggleNotes(row.key)}
+              aria-expanded={!!notesOpen[row.key]}
+            >
+              <Icon name="list" size={14} />Что нового
+            </button>
+          {/if}
           {#if rowState(row.c) === "outdated"}
             <span class="pill err" title={"Минимальная поддерживаемая версия — " + row.c?.min}><span class="dot"></span>нужна {row.c?.min}+</span>
             <button class="btn sm primary" disabled={!!busy} onclick={applySingbox}>
@@ -191,6 +246,50 @@
             <span class="pill"><span class="dot"></span>нет данных</span>
           {/if}
         </div>
+        {#if notesOpen[row.key]}
+          {@const cl = notes[row.key]}
+          <div class="notes">
+            {#if notesLoading[row.key] && !cl}
+              <p class="hint-text">Загрузка списка изменений…</p>
+            {:else if notesErr[row.key]}
+              <p class="hint-text" style="color:var(--danger-text)">Не удалось загрузить: {notesErr[row.key]}</p>
+            {:else if cl}
+              <div class="notes-title">
+                {#if cl.newer}
+                  Изменения после {cl.current}
+                {:else if cl.installed}
+                  Установленная версия {cl.current}
+                {:else if cl.current}
+                  Последний описанный релиз (установлена {cl.current})
+                {:else}
+                  Последний релиз
+                {/if}
+              </div>
+              {#each cl.releases as r}
+                <div class="rel">
+                  <div class="rel-head">
+                    {#if r.url}
+                      <a class="mono" href={r.url} target="_blank" rel="noopener noreferrer">{r.version}</a>
+                    {:else}
+                      <span class="mono">{r.version}</span>
+                    {/if}
+                    {#if r.date}<span class="rel-date">{r.date}</span>{/if}
+                  </div>
+                  {#if r.notes}
+                    <div class="md">{@html renderMarkdown(r.notes)}</div>
+                  {:else}
+                    <p class="hint-text">Описание не опубликовано.</p>
+                  {/if}
+                </div>
+              {:else}
+                <p class="hint-text">Нет данных об изменениях.</p>
+              {/each}
+              <a class="notes-more" href={cl.url} target="_blank" rel="noopener noreferrer">
+                Полный список изменений <Icon name="arrowRight" size={13} />
+              </a>
+            {/if}
+          </div>
+        {/if}
       {/each}
 
       {#if uiRestarting}
@@ -275,5 +374,121 @@
   .upd-text span {
     font-size: 11.5px;
     color: var(--text-faint);
+  }
+  .btn.ghost.on {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+  .notes {
+    margin: 0 0 8px;
+    padding: 10px 14px;
+    border-radius: var(--r);
+    background: var(--surface-2);
+    max-height: 420px;
+    overflow: auto;
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  .notes-title {
+    font-size: 11.5px;
+    color: var(--text-faint);
+    margin-bottom: 6px;
+  }
+  .rel + .rel {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-soft);
+  }
+  .rel-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-weight: 600;
+  }
+  .rel-head a {
+    color: var(--accent-text);
+    text-decoration: none;
+  }
+  .rel-date {
+    font-size: 11.5px;
+    font-weight: 400;
+    color: var(--text-faint);
+  }
+  .notes-more {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--accent-text);
+    text-decoration: none;
+  }
+  .md {
+    color: var(--text-dim);
+    overflow-wrap: anywhere;
+  }
+  .md :global(h4),
+  .md :global(h5),
+  .md :global(h6) {
+    margin: 8px 0 4px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .md :global(p) {
+    margin: 4px 0;
+  }
+  .md :global(ul) {
+    margin: 4px 0;
+    padding-left: 18px;
+  }
+  .md :global(ul ul) {
+    margin: 2px 0;
+  }
+  .md :global(li) {
+    margin: 2px 0;
+  }
+  .md :global(a) {
+    color: var(--accent-text);
+  }
+  .md :global(b) {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .md :global(code) {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--surface-3);
+  }
+  .md :global(pre) {
+    margin: 6px 0;
+    padding: 8px 10px;
+    border-radius: var(--r-sm);
+    background: var(--surface-3);
+    overflow: auto;
+  }
+  .md :global(.md-table) {
+    margin: 6px 0;
+    overflow-x: auto;
+  }
+  .md :global(table) {
+    border-collapse: collapse;
+    font-size: 11.5px;
+  }
+  .md :global(th),
+  .md :global(td) {
+    padding: 3px 8px;
+    border: 1px solid var(--border-soft);
+    text-align: left;
+  }
+  .md :global(th) {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .md :global(pre code) {
+    padding: 0;
+    background: none;
   }
 </style>

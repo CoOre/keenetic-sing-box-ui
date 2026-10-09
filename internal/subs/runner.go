@@ -3,7 +3,6 @@ package subs
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -11,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/CoOre/keenetic-sing-box-ui/internal/proxyretry"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/servers"
 )
 
@@ -147,28 +147,22 @@ func (r *Runner) fetch(ctx context.Context, sub *Subscription) (*Fetched, string
 	if ua == "" {
 		ua = DefaultUserAgent
 	}
-	ctx1, cancel1 := context.WithTimeout(ctx, fetchTimeout)
-	defer cancel1()
-	f, err := Fetch(ctx1, &http.Client{}, sub.URL, ua)
-	if err == nil {
-		return f, "direct", nil
-	}
-	// A response we got but couldn't parse won't improve through the proxy.
-	var perr *parseError
-	if errors.As(err, &perr) || r.ProxyClient == nil {
+	var f *Fetched
+	via, err := proxyretry.Do(ctx, fetchTimeout, &http.Client{}, r.ProxyClient, nil,
+		func(ctx context.Context, c *http.Client) error {
+			var err error
+			f, err = Fetch(ctx, c, sub.URL, ua)
+			// A response we got but couldn't parse won't improve through the proxy.
+			var perr *parseError
+			if errors.As(err, &perr) {
+				return proxyretry.Permanent(err)
+			}
+			return err
+		})
+	if err != nil {
 		return nil, "", err
 	}
-	pc := r.ProxyClient()
-	if pc == nil {
-		return nil, "", err
-	}
-	ctx2, cancel2 := context.WithTimeout(ctx, fetchTimeout)
-	defer cancel2()
-	f, perr2 := Fetch(ctx2, pc, sub.URL, ua)
-	if perr2 != nil {
-		return nil, "", fmt.Errorf("напрямую: %v; через прокси: %w", err, perr2)
-	}
-	return f, "proxy", nil
+	return f, via, nil
 }
 
 // ValidateURL checks that raw is an absolute http(s) URL.

@@ -256,6 +256,25 @@ export interface UpdateStatus {
   last_error?: string;
 }
 
+export interface ReleaseNotes {
+  version: string;
+  date?: string; // YYYY-MM-DD
+  notes: string; // Markdown
+  url?: string;
+}
+
+// GET /api/update/changelog: versions after the installed one (newer=true,
+// newest first), else one release — the installed version itself
+// (installed=true) or the newest one before it.
+export interface UpdateChangelog {
+  target: "singbox" | "ui";
+  current?: string;
+  newer: boolean;
+  installed: boolean;
+  releases: ReleaseNotes[];
+  url: string; // full changelog page
+}
+
 export interface UpdateStatusResp {
   status: UpdateStatus;
   auto_update_singbox: boolean;

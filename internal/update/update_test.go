@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"runtime"
 	"testing"
 
+	"github.com/CoOre/keenetic-sing-box-ui/internal/settings"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/singbox"
 )
 
@@ -68,5 +71,32 @@ func TestCheckUI_DevBuildAheadOfTag(t *testing.T) {
 	c := m.checkUI(context.Background())
 	if c.Available {
 		t.Errorf("dev build ahead of tag must not report an update: %+v", c)
+	}
+}
+
+func TestProxiedClient_SharesTransport(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	st := settings.NewStore(filepath.Join(t.TempDir(), "settings.json"))
+	s := settings.Defaults()
+	s.InboundMode, s.InboundPort = "socks", port
+	if _, err := st.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{Settings: st, Log: slog.Default()}
+	a, b := m.ProxiedClient(), m.ProxiedClient()
+	if a == nil || b == nil {
+		t.Fatal("want a proxied client while the port listens")
+	}
+	if a.Transport != b.Transport {
+		t.Error("each call must reuse the same transport (keep-alive leak otherwise)")
+	}
+	if (&Manager{Log: slog.Default()}).ProxiedClient() != nil {
+		t.Error("no settings store must mean no proxy")
 	}
 }
