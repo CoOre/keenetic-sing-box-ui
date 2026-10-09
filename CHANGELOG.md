@@ -2,6 +2,41 @@
 
 Генерируется из коммитов скриптом `scripts/changelog.sh` (`make changelog`).
 
+## [v0.1.7] — 2026-10-09
+
+### Новое
+
+- **share:** поддержка TUIC v5 ([3162d1b](https://github.com/CoOre/keenetic-sing-box-ui/commit/3162d1b))
+  - добавлен протокол tuic: разбор ссылок tuic://uuid:password@host:port (формы v2rayN/NekoBox и Clash/Meta: allow_insecure/skip-cert-verify, congestion_control/congestion-controller, udp_relay_mode/udp-relay-mode, reduce_rtt/reduce-rtt, disable_sni, пароль в ?password=)
+  - TUIC v4 (без пароля или version≠5) отклоняется с понятной ошибкой: sing-box умеет только v5
+  - outbound tuic: обязательный TLS без uTLS/Reality, ALPN h3 по умолчанию (без него QUIC-хендшейк падает с «no application protocol»), congestion_control, udp_relay_mode, zero_rtt_handshake, tls.disable_sni
+  - валидация TUIC: UUID в формах sing-box (36 с дефисами или 32 hex), скобки и urn:uuid: снимаются; неизвестные congestion_control/udp_relay_mode сбрасываются на значения по умолчанию, а не выкидывают сервер из подписки; UUID у vless/vmess не нормализуется (ключ сервера в подписке)
+  - значения настроек из ссылок приводятся к виду sing-box (NEW-RENO, newreno → new_reno); insecure=true/allowInsecure=true принимаются и для hy2/vless
+  - multiplex включается по списку разрешённых протоколов share.SupportsMultiplex (vless, vmess, trojan, shadowsocks) вместо исключений для QUIC
+  - в редакторе сервера: протокол TUIC, раздел с congestion control, передачей UDP и 0-RTT, переключатель «Не отправлять SNI»; ALPN сбрасывается при смене TCP ↔ QUIC; бейдж TUIC в списке серверов
+  - добавлены тесты разбора, валидации и сборки; README; пересобраны web/dist-ассеты
+- **update:** «Что нового» для ядра sing-box и веб-интерфейса ([e9f5679](https://github.com/CoOre/keenetic-sing-box-ui/commit/e9f5679))
+  - добавлен эндпоинт GET /api/update/changelog?target=singbox|ui: версии после установленной (до 15) или описание установленной версии (флаг installed)
+  - sing-box: разделы из docs/changelog.md ветки stable (пререлизы пропускаются, дубли заголовков отсеиваются, относительные ссылки — на sing-box.sagernet.org); веб-интерфейс: тексты GitHub-релизов
+  - кэш на час, перезагрузка при новой версии не чаще раза в 10 минут, пауза 2 минуты после ошибки с отдачей старых данных; загрузка в фоне без привязки к запросу, параллельные запросы делят одну загрузку
+  - добавлен пакет internal/proxyretry: «напрямую → через прокси» с таймаутом на попытку и Permanent-ошибками без повтора; на него переведены установка обновлений, changelog и подписки
+  - ProxiedClient переиспользует один http.Transport на порт (утечка keep-alive соединений) и сам проверяет отсутствие настроек
+  - в карточке «Обновления» кнопка «Что нового» с раскрывающимся списком изменений; защита от гонок запросов
+  - добавлен web/src/lib/markdown.ts: безопасный рендер (экранирование, только http(s)-ссылки), списки, таблицы, код
+  - добавлены тесты changelog, proxyretry, ProxiedClient и live-тест (-tags live), пересобраны web/dist-ассеты
+
+### Прочее
+
+- **release:** changelog из коммитов и текст релиза в CI ([2d4c178](https://github.com/CoOre/keenetic-sing-box-ui/commit/2d4c178))
+  - добавлен scripts/changelog.sh: разделы по Conventional Commits (Новое, Исправления, Производительность, Рефакторинг, Прочее, Несовместимые изменения), тело коммита переносится как есть, ссылки на коммиты и compare; chore(release) пропускается
+  - CI: release-job тянет всю историю и публикует релиз с телом из scripts/changelog.sh notes <tag>
+  - добавлены make changelog [NEXT=…] (атомарная запись CHANGELOG.md) и make release V=vX.Y.Z (CHANGELOG.md, коммит chore(release), тег; отказ при грязном дереве, существующем теге и без новых коммитов)
+  - добавлен CHANGELOG.md по тегам v0.1.0–v0.1.6, описан процесс в README
+- **hooks:** добавлен .githooks/pre-commit ([023fa8d](https://github.com/CoOre/keenetic-sing-box-ui/commit/023fa8d))
+  - golangci-lint по staged .go и svelte-check по web/src; подключается make hooks
+
+**Полный список изменений:** [v0.1.6...v0.1.7](https://github.com/CoOre/keenetic-sing-box-ui/compare/v0.1.6...v0.1.7)
+
 ## [v0.1.6] — 2026-10-06
 
 ### Новое
