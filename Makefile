@@ -12,7 +12,7 @@ LDFLAGS      := -s -w \
 GOFLAGS      := -trimpath -ldflags '$(LDFLAGS)'
 NPM_CACHE    ?= /tmp/ksbui-npmcache
 
-.PHONY: all build build-arm64 build-web web-install run test lint hooks tidy clean package install-router
+.PHONY: all build build-arm64 build-web web-install run test lint hooks tidy clean package install-router changelog release
 
 all: build
 
@@ -66,3 +66,22 @@ package: build-arm64
 
 install-router:
 	scripts/install-router.sh
+
+# CHANGELOG.md из Conventional Commits по тегам v*. NEXT=v0.1.7 — заголовок
+# для коммитов после последнего тега (иначе «Не выпущено»).
+changelog:
+	scripts/changelog.sh full $(NEXT) > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md
+
+# Релиз: CHANGELOG.md + коммит chore(release) + тег. Пуш — вручную:
+#   make release V=v0.1.7 && git push origin main v0.1.7
+release:
+	@[ -n "$(V)" ] || { echo "usage: make release V=vX.Y.Z" >&2; exit 2; }
+	@echo "$(V)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "V должен быть вида vX.Y.Z" >&2; exit 2; }
+	@[ -z "$$(git status --porcelain --untracked-files=no)" ] || { echo "есть незакоммиченные изменения" >&2; exit 1; }
+	@! git rev-parse -q --verify "refs/tags/$(V)" >/dev/null || { echo "тег $(V) уже есть" >&2; exit 1; }
+	@last=$$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null); \
+		[ -n "$$(git log --no-merges --format=%h $${last:+$$last..}HEAD | head -1)" ] || { echo "нет коммитов после $$last — выпускать нечего" >&2; exit 1; }
+	scripts/changelog.sh full $(V) > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md
+	git add CHANGELOG.md
+	git commit -m "chore(release): $(V)"
+	git tag -a $(V) -m $(V)

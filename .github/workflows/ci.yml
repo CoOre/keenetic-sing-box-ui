@@ -58,6 +58,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # теги и история для changelog
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -68,8 +70,10 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: make package
+      - run: scripts/changelog.sh notes "$GITHUB_REF_NAME" > dist/RELEASE_NOTES.md
       - uses: softprops/action-gh-release@v2
         with:
+          body_path: dist/RELEASE_NOTES.md
           files: |
             dist/*.tar.gz
             dist/sha256sums.txt

@@ -171,10 +171,17 @@ Stock-SSH Keenetic на порту 22 — это CLI (KCommand), а не shell, 
 GitHub Actions (`.github/workflows/ci.yml`) на каждый push гоняет `go vet`,
 `go test`, `golangci-lint` и кросс-сборку. По тегу `v*` собирается
 `make package` и публикуется релиз с `.tar.gz` под aarch64 и `sha256sums.txt`.
+Текст релиза собирается из коммитов с прошлого тега
+(`scripts/changelog.sh notes <tag>`) по разделам Conventional Commits:
+«Новое» (`feat`), «Исправления» (`fix`), «Производительность», «Рефакторинг»,
+«Прочее»; `!`/`BREAKING CHANGE` — в «Несовместимые изменения».
 
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+make release V=v0.1.7           # CHANGELOG.md + коммит chore(release) + тег
+git push origin main v0.1.7     # CI соберёт и опубликует релиз
 ```
+
+`make changelog [NEXT=v0.1.7]` только перегенерирует `CHANGELOG.md`.
 
 ## Лицензия
 
