@@ -37,7 +37,7 @@ func (s *Server) Validate() error {
 		if strings.TrimSpace(s.UUID) == "" {
 			return errors.New("не указан UUID")
 		}
-	case TypeTrojan:
+	case TypeTrojan, TypeAnyTLS:
 		if s.Password == "" {
 			return errors.New("не указан пароль")
 		}

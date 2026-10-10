@@ -152,7 +152,7 @@ export interface ServerPrimaryResult {
   live_error?: string;
 }
 
-export type ServerType = "vless" | "trojan" | "shadowsocks" | "vmess" | "hysteria2" | "tuic";
+export type ServerType = "vless" | "trojan" | "shadowsocks" | "vmess" | "hysteria2" | "tuic" | "anytls";
 
 export interface ServersApplyResult {
   check: CheckResult;

@@ -17,6 +17,7 @@
     { v: "vmess", label: "VMess" },
     { v: "hysteria2", label: "Hysteria 2" },
     { v: "tuic", label: "TUIC" },
+    { v: "anytls", label: "AnyTLS" },
   ];
   const SS_METHODS = [
     "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305",
@@ -26,7 +27,7 @@
   const FINGERPRINTS = ["chrome", "firefox", "safari", "ios", "edge", "random", "randomized"];
   const CONGESTION = ["cubic", "new_reno", "bbr"];
   const QUIC_TYPES: ServerType[] = ["hysteria2", "tuic"];
-  const PASSWORD_TYPES: ServerType[] = ["trojan", "hysteria2", "tuic"];
+  const PASSWORD_TYPES: ServerType[] = ["trojan", "hysteria2", "tuic", "anytls"];
   const UDP_RELAY = ["native", "quic"];
 
   function blank(): Server {
@@ -56,7 +57,8 @@
   const hasPassword = $derived(PASSWORD_TYPES.includes(t));
   const tlsForced = $derived(hasPassword);
   const tlsOn = $derived(tlsForced || !!form.tls);
-  const hasUTLS = $derived(t === "vless" || t === "vmess" || t === "trojan");
+  const hasUTLS = $derived(t === "vless" || t === "vmess" || t === "trojan" || t === "anytls");
+  const hasReality = $derived(t === "vless" || t === "anytls");
   const hasTransport = $derived(t === "vless" || t === "vmess" || t === "trojan");
   const isHy2 = $derived(t === "hysteria2");
   const isTUIC = $derived(t === "tuic");
@@ -136,7 +138,7 @@
       if (alpn.length) out.alpn = alpn;
       if (f.insecure) out.insecure = true;
       if (hasUTLS) out.fingerprint = str(f.fingerprint);
-      if (t === "vless" && reality) {
+      if (hasReality && reality) {
         out.public_key = str(f.public_key);
         out.short_id = str(f.short_id);
       }
@@ -176,7 +178,7 @@
 
   const tlsHint = $derived.by(() => {
     if (!tlsOn) return "выключен";
-    const parts = [form.sni && `SNI ${form.sni}`, t === "vless" && reality && "Reality", isTUIC && form.disable_sni && "без SNI", form.insecure && "insecure"];
+    const parts = [form.sni && `SNI ${form.sni}`, hasReality && reality && "Reality", isTUIC && form.disable_sni && "без SNI", form.insecure && "insecure"];
     return parts.filter(Boolean).join(" · ") || "включён";
   });
   const transportHint = $derived(
@@ -216,7 +218,7 @@
         <div class="row" style="gap:8px">
           <!-- svelte-ignore a11y_autofocus -->
           <input class="input mono" bind:value={link} autofocus
-            placeholder="vless:// · trojan:// · ss:// · vmess:// · hy2:// · tuic://"
+            placeholder="vless:// · trojan:// · ss:// · vmess:// · hy2:// · tuic:// · anytls://"
             onpaste={onPaste}
             onkeydown={(e) => e.key === "Enter" && parseLink()} />
           <button class="btn" disabled={!link.trim() || busy === "parse"} onclick={() => parseLink()}>
@@ -325,7 +327,7 @@
           {/if}
 
           {#if hasTLS}
-            <FormSection title={t === "vless" ? "TLS и Reality" : "TLS"} hint={tlsHint} bind:open={tlsOpen}>
+            <FormSection title={hasReality ? "TLS и Reality" : "TLS"} hint={tlsHint} bind:open={tlsOpen}>
               {#if !tlsForced}
                 <div class="toggle-row">
                   <div class="toggle-text"><b>TLS</b><span>Шифрование транспорта</span></div>
@@ -361,7 +363,7 @@
                   <div class="toggle-text"><b>Не проверять сертификат</b><span>Для самоподписанных сертификатов</span></div>
                   <button class={"toggle" + (form.insecure ? " on" : "")} onclick={() => (form.insecure = !form.insecure)} role="switch" aria-checked={!!form.insecure} aria-label="Insecure"></button>
                 </div>
-                {#if t === "vless"}
+                {#if hasReality}
                   <div class="toggle-row">
                     <div class="toggle-text"><b>Reality</b><span>TLS-маскировка под чужой сайт</span></div>
                     <button class={"toggle" + (reality ? " on" : "")} onclick={() => (reality = !reality)} role="switch" aria-checked={reality} aria-label="Reality"></button>

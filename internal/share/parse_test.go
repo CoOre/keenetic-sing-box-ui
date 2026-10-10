@@ -82,6 +82,120 @@ func TestParseTrojan(t *testing.T) {
 	}
 }
 
+func TestParseTrojan_UnescapedColonInPassword(t *testing.T) {
+	s, err := ParseLink("trojan://a:b@example.com:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Password != "a:b" {
+		t.Errorf("password = %q, want a:b", s.Password)
+	}
+}
+
+func TestMandatoryTLSIgnoresFlag(t *testing.T) {
+	// Data that bypassed the parser/editor may carry tls:false; trojan and
+	// anytls still run over TLS and must keep every TLS setting.
+	for _, typ := range []string{TypeTrojan, TypeAnyTLS} {
+		s := Server{Type: typ, Server: "h", ServerPort: 443, Password: "p",
+			SNI: "sni.example", Insecure: true, Fingerprint: "firefox", ALPN: []string{"h2"}}
+		tls, _ := s.ToOutbound("x")["tls"].(map[string]any)
+		utls, _ := tls["utls"].(map[string]any)
+		if tls["enabled"] != true || tls["insecure"] != true || tls["server_name"] != "sni.example" ||
+			utls["fingerprint"] != "firefox" || len(tls["alpn"].([]string)) != 1 {
+			t.Errorf("%s: tls = %+v", typ, tls)
+		}
+	}
+}
+
+func TestParseAnyTLS(t *testing.T) {
+	link := "anytls://s3cr%3Det@any.example.com:8443/?sni=cdn.example.com&insecure=1&fp=chrome&alpn=h2,http/1.1#AnyTLS%20node"
+	s, err := ParseLink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Type != TypeAnyTLS || s.Server != "any.example.com" || s.ServerPort != 8443 ||
+		s.Password != "s3cr=et" || s.Name != "AnyTLS node" || !s.TLS {
+		t.Errorf("anytls: %+v", s)
+	}
+	if s.SNI != "cdn.example.com" || !s.Insecure || s.Fingerprint != "chrome" || len(s.ALPN) != 2 {
+		t.Errorf("anytls tls: %+v", s)
+	}
+	out := s.ToOutbound("proxy")
+	if out["type"] != "anytls" || out["password"] != "s3cr=et" || out["server_port"] != 8443 {
+		t.Errorf("outbound: %+v", out)
+	}
+	for _, k := range []string{"transport", "multiplex"} {
+		if _, ok := out[k]; ok {
+			t.Errorf("anytls outbound must not have %q: %+v", k, out)
+		}
+	}
+	tls := out["tls"].(map[string]any)
+	if tls["enabled"] != true || tls["server_name"] != "cdn.example.com" || tls["insecure"] != true {
+		t.Errorf("tls: %+v", tls)
+	}
+	if utls, _ := tls["utls"].(map[string]any); utls["fingerprint"] != "chrome" {
+		t.Errorf("utls: %+v", tls)
+	}
+	if _, ok := tls["reality"]; ok {
+		t.Errorf("unexpected reality: %+v", tls)
+	}
+}
+
+func TestParseAnyTLS_Reality(t *testing.T) {
+	s, err := ParseLink("anytls://pw@1.2.3.4:443?security=reality&sni=www.apple.com&pbk=PUBKEY&sid=ab12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tls := s.ToOutbound("x")["tls"].(map[string]any)
+	reality, _ := tls["reality"].(map[string]any)
+	utls, _ := tls["utls"].(map[string]any)
+	if reality["public_key"] != "PUBKEY" || reality["short_id"] != "ab12" || utls["fingerprint"] != "chrome" ||
+		tls["server_name"] != "www.apple.com" {
+		t.Errorf("reality tls: %+v", tls)
+	}
+}
+
+func TestParseAnyTLS_DefaultsAndErrors(t *testing.T) {
+	s, err := ParseLink("anytls://a:b@host.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.ServerPort != 443 || s.Password != "a:b" {
+		t.Errorf("defaults: %+v", s)
+	}
+	// Transport params are ignored; applyTLSQuery takes SNI from host.
+	s, err = ParseLink("anytls://pw@host.example:443?type=ws&host=h.example&path=/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Network != "" || s.WSPath != "" || s.SNI != "h.example" {
+		t.Errorf("ws params: %+v", s)
+	}
+	s, _ = ParseLink("anytls://host.example:443?password=qp")
+	if s == nil || s.Password != "qp" {
+		t.Errorf("password from query: %+v", s)
+	}
+	for _, bad := range []string{"anytls://host.example:443", "anytls://pw@:443"} {
+		if _, err := ParseLink(bad); err == nil {
+			t.Errorf("%s: expected error", bad)
+		}
+	}
+}
+
+func TestParseAnyTLS_RoundTrip(t *testing.T) {
+	// The subscription path: parse → Validate → ToOutbound.
+	s, err := ParseLink("anytls://pw@host.example:443?sni=host.example#n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if out := s.ToOutbound("n"); out == nil || out["type"] != TypeAnyTLS {
+		t.Fatalf("outbound: %+v", out)
+	}
+}
+
 func TestParseShadowsocks_UserinfoBase64(t *testing.T) {
 	userinfo := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:mypassword"))
 	link := "ss://" + userinfo + "@1.2.3.4:8388#ss-server"
@@ -323,6 +437,7 @@ func TestServerValidate(t *testing.T) {
 		{Type: TypeHysteria2, Server: "h", Password: "p", ServerPorts: []string{"20000:30000"}},
 		{Type: TypeTUIC, Server: "h", ServerPort: 443, UUID: " b379c1d9-0b37-41b0-96b8-467c29b8ca9d ", Password: "p", CongestionControl: "bbr"},
 		{Type: TypeTUIC, Server: "h", ServerPort: 443, UUID: "b379c1d90b3741b096b8467c29b8ca9d", Password: "p"},
+		{Type: TypeAnyTLS, Server: "h", ServerPort: 443, Password: "p"},
 	}
 	for _, s := range ok {
 		if err := s.Validate(); err != nil {
@@ -338,6 +453,7 @@ func TestServerValidate(t *testing.T) {
 		{Type: TypeTUIC, Server: "h", ServerPort: 443, UUID: "not-a-uuid", Password: "p"},
 		{Type: TypeTUIC, Server: "h", ServerPort: 443, UUID: "b379c1d9-0b3741b0-96b8-467c29b8ca9d", Password: "p"}, // partial dashes
 		{Type: TypeTUIC, Server: "h", ServerPort: 443, UUID: "b379c1d9-0b37-41b0-96b8-467c29b8ca9d"},
+		{Type: TypeAnyTLS, Server: "h", ServerPort: 443},
 		{Type: "wireguard", Server: "h", ServerPort: 1},
 	}
 	for _, s := range bad {

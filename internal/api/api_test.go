@@ -389,6 +389,43 @@ func TestServers_ParseSaveApply(t *testing.T) {
 	}
 }
 
+func TestServers_AnyTLSParseSaveApply(t *testing.T) {
+	e := newEnv(t)
+	link := "anytls://pw@any.example:443?security=reality&pbk=KEY&sid=ab12&sni=www.apple.com#any"
+	resp := e.bearer(http.MethodPost, "/api/servers/parse", []byte(`{"link":"`+link+`"}`))
+	pbody := readAll(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("parse status %d: %s", resp.StatusCode, pbody)
+	}
+	resp = e.bearer(http.MethodPost, "/api/servers", pbody)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("save status %d: %s", resp.StatusCode, readAll(t, resp))
+	}
+	resp = e.bearer(http.MethodPost, "/api/servers/apply", []byte(`{"restart":false}`))
+	if abody := readAll(t, resp); resp.StatusCode != http.StatusOK {
+		t.Fatalf("apply status %d: %s", resp.StatusCode, abody)
+	}
+	cfg, err := e.deps.Config.Read()
+	if err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+	var parsed struct {
+		Outbounds []map[string]any `json:"outbounds"`
+	}
+	mustJSON(t, cfg, &parsed)
+	for _, o := range parsed.Outbounds {
+		if o["type"] != "anytls" {
+			continue
+		}
+		tls, _ := o["tls"].(map[string]any)
+		if o["password"] != "pw" || tls["reality"] == nil {
+			t.Errorf("anytls outbound: %+v", o)
+		}
+		return
+	}
+	t.Errorf("no anytls outbound in config: %s", cfg)
+}
+
 func TestSettings_RoundTripAndAffectsApply(t *testing.T) {
 	e := newEnv(t)
 	// default

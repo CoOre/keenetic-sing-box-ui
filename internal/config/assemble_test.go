@@ -252,13 +252,14 @@ func TestAssemble_MultipleServers_AddsAuto(t *testing.T) {
 	}
 }
 
-func TestAssemble_MultiplexSkipsQUIC(t *testing.T) {
+func TestAssemble_MultiplexOnlyWhereSupported(t *testing.T) {
 	vless := map[string]any{"type": "vless", "server": "1.2.3.4", "server_port": 443, "uuid": "u"}
 	hy2 := map[string]any{"type": "hysteria2", "server": "5.6.7.8", "server_port": 443, "password": "p"}
 	tuic := map[string]any{"type": "tuic", "server": "9.9.9.9", "server_port": 443, "uuid": "u", "password": "p"}
+	anytls := map[string]any{"type": "anytls", "server": "7.7.7.7", "server_port": 443, "password": "p"}
 	ss := map[string]any{"type": "shadowsocks", "server": "8.8.8.8", "server_port": 8388, "method": "aes-128-gcm", "password": "p"}
 	body, err := Assemble(AssembleOptions{InboundMode: InboundTun, Multiplex: true},
-		[]ProxyOutbound{{Tag: "v", Object: vless}, {Tag: "h", Object: hy2}, {Tag: "t", Object: tuic}, {Tag: "s", Object: ss}})
+		[]ProxyOutbound{{Tag: "v", Object: vless}, {Tag: "h", Object: hy2}, {Tag: "t", Object: tuic}, {Tag: "a", Object: anytls}, {Tag: "s", Object: ss}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,9 +275,10 @@ func TestAssemble_MultiplexSkipsQUIC(t *testing.T) {
 			if !hasMux {
 				t.Errorf("%s: multiplex missing", m["type"])
 			}
-		case "h", "t":
+		case "h", "t", "a":
+			// QUIC has no mux; anytls pools sessions and rejects the field.
 			if hasMux {
-				t.Errorf("%s: multiplex must not be set on QUIC outbounds", m["type"])
+				t.Errorf("%s: multiplex must not be set", m["type"])
 			}
 		}
 	}

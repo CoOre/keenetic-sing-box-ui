@@ -1,5 +1,5 @@
 // Package share parses proxy "share links" (vless://, trojan://, ss://,
-// vmess://, hysteria2://, tuic://) into a unified Server model and builds sing-box outbound objects
+// vmess://, hysteria2://, tuic://, anytls://) into a unified Server model and builds sing-box outbound objects
 // from it. This lets the UI accept a pasted link or form fields instead of
 // requiring hand-written sing-box JSON.
 package share
@@ -12,12 +12,14 @@ const (
 	TypeVMess       = "vmess"
 	TypeHysteria2   = "hysteria2"
 	TypeTUIC        = "tuic"
+	TypeAnyTLS      = "anytls"
 )
 
 // SupportsMultiplex reports whether a sing-box outbound type has the
 // "multiplex" field. QUIC-based ones (hysteria2, tuic) don't, and sing-box
-// check rejects it there — so this is an allow-list: a protocol added here
-// later stays without mux until it is listed explicitly.
+// check rejects it there; anytls pools its own sessions and rejects the field
+// too. So this is an allow-list: a protocol added here later stays without mux
+// until it is listed explicitly.
 func SupportsMultiplex(typ string) bool {
 	switch typ {
 	case TypeVLESS, TypeVMess, TypeTrojan, TypeShadowsocks:
@@ -38,7 +40,7 @@ type Server struct {
 
 	// Credentials
 	UUID     string `json:"uuid,omitempty"`     // vless, vmess, tuic
-	Password string `json:"password,omitempty"` // trojan, shadowsocks, hysteria2 (auth), tuic
+	Password string `json:"password,omitempty"` // trojan, shadowsocks, hysteria2 (auth), tuic, anytls
 	Method   string `json:"method,omitempty"`   // shadowsocks
 	AlterID  int    `json:"alter_id,omitempty"` // vmess
 	Flow     string `json:"flow,omitempty"`     // vless
@@ -90,6 +92,8 @@ func (s *Server) ToOutbound(tag string) map[string]any {
 		return s.hysteria2Outbound(tag)
 	case TypeTUIC:
 		return s.tuicOutbound(tag)
+	case TypeAnyTLS:
+		return s.anytlsOutbound(tag)
 	default:
 		return nil
 	}
@@ -125,16 +129,9 @@ func (s *Server) trojanOutbound(tag string) map[string]any {
 		"server":      s.Server,
 		"server_port": s.ServerPort,
 		"password":    s.Password,
+		// Trojan always runs over TLS, whatever the TLS flag says.
+		"tls": s.fullTLSBlock(),
 	}
-	// Trojan implies TLS by default.
-	tls := s.tlsBlock()
-	if tls == nil {
-		tls = map[string]any{"enabled": true}
-		if s.SNI != "" {
-			tls["server_name"] = s.SNI
-		}
-	}
-	o["tls"] = tls
 	if t := s.transportBlock(); t != nil {
 		o["transport"] = t
 	}
@@ -235,6 +232,20 @@ func (s *Server) tuicOutbound(tag string) map[string]any {
 	return o
 }
 
+// anytlsOutbound builds an AnyTLS outbound: TLS is mandatory (uTLS and
+// REALITY work), there is no transport, and it pools its own sessions instead
+// of multiplex.
+func (s *Server) anytlsOutbound(tag string) map[string]any {
+	return map[string]any{
+		"type":        TypeAnyTLS,
+		"tag":         tag,
+		"server":      s.Server,
+		"server_port": s.ServerPort,
+		"password":    s.Password,
+		"tls":         s.fullTLSBlock(),
+	}
+}
+
 // quicTLSBlock is the always-enabled TLS object without uTLS/REALITY, which
 // QUIC-based protocols don't support.
 func (s *Server) quicTLSBlock() map[string]any {
@@ -256,6 +267,12 @@ func (s *Server) tlsBlock() map[string]any {
 	if !s.TLS {
 		return nil
 	}
+	return s.fullTLSBlock()
+}
+
+// fullTLSBlock is the enabled TLS object with uTLS/REALITY, regardless of the
+// TLS flag — for protocols that mandate TLS (trojan, anytls).
+func (s *Server) fullTLSBlock() map[string]any {
 	tls := s.quicTLSBlock()
 	if s.Fingerprint != "" {
 		tls["utls"] = map[string]any{"enabled": true, "fingerprint": s.Fingerprint}

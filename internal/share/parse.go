@@ -10,7 +10,8 @@ import (
 )
 
 // ParseLink parses a single proxy share link into a Server. Supported schemes:
-// vless://, trojan://, ss://, vmess://, hysteria2:// (alias hy2://), tuic://.
+// vless://, trojan://, ss://, vmess://, hysteria2:// (alias hy2://), tuic://,
+// anytls://.
 func ParseLink(raw string) (*Server, error) {
 	raw = strings.TrimSpace(raw)
 	switch {
@@ -26,8 +27,10 @@ func ParseLink(raw string) (*Server, error) {
 		return parseHysteria2(raw)
 	case strings.HasPrefix(raw, "tuic://"):
 		return parseTUIC(raw)
+	case strings.HasPrefix(raw, "anytls://"):
+		return parseAnyTLS(raw)
 	default:
-		return nil, fmt.Errorf("unsupported or unrecognized link (expected vless/trojan/ss/vmess/hysteria2/tuic://)")
+		return nil, fmt.Errorf("unsupported or unrecognized link (expected vless/trojan/ss/vmess/hysteria2/tuic/anytls://)")
 	}
 }
 
@@ -61,9 +64,7 @@ func parseTrojan(raw string) (*Server, error) {
 		return nil, fmt.Errorf("parse trojan: %w", err)
 	}
 	s := &Server{Type: TypeTrojan, Name: frag(u)}
-	if u.User != nil {
-		s.Password = u.User.Username()
-	}
+	s.Password = userinfoSecret(u)
 	if err := setHostPort(s, u); err != nil {
 		return nil, err
 	}
@@ -310,6 +311,43 @@ func parseTUIC(raw string) (*Server, error) {
 		return nil, fmt.Errorf("tuic: нет пароля — похоже на TUIC v4, поддерживается только v5")
 	}
 	return s, nil
+}
+
+// parseAnyTLS handles anytls://password@host:port/?params#name (the anytls-go
+// URI scheme, also used by v2rayN/NekoBox/mihomo). TLS is mandatory; uTLS and
+// REALITY params are read like for vless, transport params are ignored.
+func parseAnyTLS(raw string) (*Server, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse anytls: %w", err)
+	}
+	s := &Server{Type: TypeAnyTLS, Name: frag(u), TLS: true}
+	q := u.Query()
+	s.Password = firstNonEmpty(userinfoSecret(u), q.Get("password"))
+	if err := setHostPort(s, u); err != nil {
+		return nil, err
+	}
+	if s.ServerPort == 0 {
+		s.ServerPort = 443
+	}
+	applyTLSQuery(s, q)
+	if s.Password == "" || s.Server == "" {
+		return nil, fmt.Errorf("anytls: missing password or server")
+	}
+	return s, nil
+}
+
+// userinfoSecret returns the whole userinfo of a password-only link. Clients
+// don't always escape ":" in the password, and url.Parse would split it into
+// user and password halves.
+func userinfoSecret(u *url.URL) string {
+	if u.User == nil {
+		return ""
+	}
+	if pwd, ok := u.User.Password(); ok {
+		return u.User.Username() + ":" + pwd
+	}
+	return u.User.Username()
 }
 
 // normalizeEnum maps client spellings of an option value (NEW-RENO,
