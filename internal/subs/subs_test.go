@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -135,5 +136,33 @@ func TestRunner_Refresh(t *testing.T) {
 	}
 	if list, _ := ss.List(); len(list) != 2 {
 		t.Errorf("servers wiped on error: %d", len(list))
+	}
+}
+
+// Servers synced but subs.json not written: the refresh still succeeds, so
+// its warnings reach the UI (the next refresh finds nothing changed and
+// would never repeat them), and the save error is reported on its own.
+func TestRunner_RefreshStateSaveFails(t *testing.T) {
+	body := base64.StdEncoding.EncodeToString([]byte(linkVLESS))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	st := NewStore(filepath.Join(dir, "subs.json"))
+	ss := servers.NewStore(filepath.Join(dir, "servers.json"))
+	r := &Runner{Store: st, Servers: ss}
+	sub, _ := st.Add(Subscription{URL: srv.URL, Enabled: true})
+	if err := os.Mkdir(st.Path+".new", 0o755); err != nil { // the tmp file can't be written
+		t.Fatal(err)
+	}
+
+	res, err := r.Refresh(context.Background(), sub.ID)
+	if err != nil || !res.Changed || res.StateError == "" {
+		t.Fatalf("refresh: %+v %v, want changed with a state error", res, err)
+	}
+	if list, _ := ss.List(); len(list) != 1 {
+		t.Errorf("servers: %d, want 1", len(list))
 	}
 }

@@ -170,7 +170,7 @@ func TestImportRejects(t *testing.T) {
 		{"invalid ui config", makeArchive(t, true, map[string]string{"ui/config.json": `{"admin_token":""}`}), "admin_token is empty"},
 		{"invalid json", makeArchive(t, true, map[string]string{"singbox/config.json": "{oops"}), "not valid JSON"},
 		{"invalid pem", makeArchive(t, true, map[string]string{"ui/tls/cert.pem": "nope"}), "not valid PEM"},
-		{"invalid servers", makeArchive(t, true, map[string]string{"ui/servers.json": `{"not":"a list"}`}), "ui/servers.json"},
+		{"invalid servers", makeArchive(t, true, map[string]string{"ui/servers.json": `{"servers":"not a list"}`}), "ui/servers.json"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -221,5 +221,22 @@ func TestImportValidatesBeforeWriting(t *testing.T) {
 	}
 	if _, err := os.Stat(m.ServersPath); !os.IsNotExist(err) {
 		t.Fatal("servers.json written despite a failed import")
+	}
+}
+
+// servers.json holds the chains and the primary pick since chains came in;
+// both that form and the old plain list restore.
+func TestImportServersFormats(t *testing.T) {
+	for name, body := range map[string]string{
+		"list":   `[{"id":"z","name":"srv","primary":true}]`,
+		"object": `{"servers":[{"id":"a"},{"id":"b"}],"chains":[{"id":"c","name":"via","hops":["a","b"]}],"primary":"c"}`,
+	} {
+		m := testManager(t, t.TempDir())
+		if _, err := m.Import(makeArchive(t, true, map[string]string{"ui/servers.json": body})); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+		if got, _ := os.ReadFile(m.ServersPath); string(got) != body {
+			t.Errorf("%s: servers.json = %s", name, got)
+		}
 	}
 }

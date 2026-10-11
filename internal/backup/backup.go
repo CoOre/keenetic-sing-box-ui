@@ -21,9 +21,9 @@ import (
 
 	"github.com/CoOre/keenetic-sing-box-ui/internal/auth"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/lists"
-	"github.com/CoOre/keenetic-sing-box-ui/internal/subs"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/servers"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/settings"
+	"github.com/CoOre/keenetic-sing-box-ui/internal/subs"
 )
 
 // FormatVersion is bumped when the archive layout changes incompatibly.
@@ -290,8 +290,8 @@ func validateUIConfig(b []byte) error {
 }
 
 func validateServers(b []byte) error {
-	var list []servers.Entry
-	return json.Unmarshal(b, &list)
+	_, err := servers.ParseState(b)
+	return err
 }
 
 func validateSettings(b []byte) error {

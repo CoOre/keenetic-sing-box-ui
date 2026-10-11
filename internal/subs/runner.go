@@ -41,6 +41,12 @@ type Runner struct {
 type Result struct {
 	Sub     *Subscription `json:"subscription"`
 	Changed bool          `json:"changed"`
+	// Warnings say what this refresh broke: the primary server or chains
+	// using a server that's gone (see servers.Store.SyncSub). Also logged.
+	Warnings []string `json:"warnings,omitempty"`
+	// StateError is set when the servers were synced but the subscription's
+	// own state (last fetch, count, error) couldn't be saved.
+	StateError string `json:"state_error,omitempty"`
 }
 
 func (r *Runner) log() *slog.Logger {
@@ -115,11 +121,17 @@ func (r *Runner) Refresh(ctx context.Context, id string) (Result, error) {
 		return Result{Sub: sub}, ferr
 	}
 
-	changed, serr := r.Servers.SyncSub(sub.ID, f.Servers)
+	changed, warnings, serr := r.Servers.SyncSub(sub.ID, f.Servers)
 	if serr != nil {
 		sub.LastError = "сохранение серверов: " + serr.Error()
 		_ = r.Store.Update(sub)
 		return Result{Sub: sub}, serr
+	}
+	// Logged here, whether or not anything gets applied: a background refresh
+	// has no one to show them to. Each is reported once — by the refresh that
+	// broke it.
+	for _, w := range warnings {
+		r.log().Warn("subs: refresh broke a server pick", "id", sub.ID, "warning", w)
 	}
 	sub.LastError = ""
 	sub.LastCount = len(f.Servers)
@@ -134,11 +146,15 @@ func (r *Runner) Refresh(ctx context.Context, id string) (Result, error) {
 	if sub.Name == "" {
 		sub.Name = hostOf(sub.URL)
 	}
+	stateErr := ""
 	if err := r.Store.Update(sub); err != nil {
-		return Result{Sub: sub, Changed: changed}, err
+		// The servers are synced already: failing the refresh would lose its
+		// warnings for good (the next one finds nothing changed).
+		r.log().Error("subs: saving subscription state failed", "id", sub.ID, "err", err)
+		stateErr = err.Error()
 	}
 	r.log().Info("subs: refreshed", "id", sub.ID, "servers", len(f.Servers), "skipped", f.Skipped, "changed", changed, "via", via)
-	return Result{Sub: sub, Changed: changed}, nil
+	return Result{Sub: sub, Changed: changed, Warnings: warnings, StateError: stateErr}, nil
 }
 
 // fetch tries a direct download first, then through the local proxy.

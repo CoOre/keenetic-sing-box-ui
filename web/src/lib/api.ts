@@ -9,6 +9,7 @@ import type {
   BackupMeta,
   Server,
   ServersState,
+  Chain,
   ServerPrimaryResult,
   ServersApplyResult,
   SingboxSettings,
@@ -16,6 +17,7 @@ import type {
   ListSource,
   Subscription,
   SubInput,
+  DeleteResult,
   SubRefreshResult,
   UpdateChangelog,
   UpdateStatus,
@@ -196,8 +198,15 @@ export const api = {
   serverSave(s: Server): Promise<Server> {
     return request("POST", "/api/servers", s);
   },
-  async serverDelete(id: string): Promise<void> {
-    await request("DELETE", `/api/servers/${encodeURIComponent(id)}`);
+  // dryRun: only say what deleting would break (see DeleteResult).
+  serverDelete(id: string, dryRun = false): Promise<DeleteResult> {
+    return request("DELETE", `/api/servers/${encodeURIComponent(id)}${dryRun ? "?dry_run=1" : ""}`);
+  },
+  chainSave(c: Chain): Promise<Chain> {
+    return request("POST", "/api/chains", c);
+  },
+  chainDelete(id: string, dryRun = false): Promise<DeleteResult> {
+    return request("DELETE", `/api/chains/${encodeURIComponent(id)}${dryRun ? "?dry_run=1" : ""}`);
   },
   serversApply(restart: boolean): Promise<ServersApplyResult> {
     return request("POST", "/api/servers/apply", { restart });
@@ -241,8 +250,8 @@ export const api = {
   subUpdate(id: string, s: SubInput): Promise<Subscription> {
     return request("PUT", `/api/subs/${encodeURIComponent(id)}`, s);
   },
-  async subDelete(id: string): Promise<void> {
-    await request("DELETE", `/api/subs/${encodeURIComponent(id)}`);
+  subDelete(id: string, dryRun = false): Promise<DeleteResult> {
+    return request("DELETE", `/api/subs/${encodeURIComponent(id)}${dryRun ? "?dry_run=1" : ""}`);
   },
   subRefresh(id: string): Promise<SubRefreshResult> {
     return request("POST", `/api/subs/${encodeURIComponent(id)}/refresh`);

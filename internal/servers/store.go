@@ -5,143 +5,218 @@
 package servers
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
 	"github.com/CoOre/keenetic-sing-box-ui/internal/share"
 )
 
-// Entry is a stored server: a share.Server plus a stable ID. Primary marks
-// the server the "proxy" selector should point at; at most one entry has it,
-// and none means "auto" (fastest by urltest). SubID links the entry to the
-// subscription that manages it (see SyncSub); empty = added by hand.
+// Entry is a stored server: a share.Server plus a stable ID. SubID links the
+// entry to the subscription that manages it (see SyncSub); empty = added by
+// hand.
 type Entry struct {
-	ID      string `json:"id"`
-	Primary bool   `json:"primary,omitempty"`
-	SubID   string `json:"sub_id,omitempty"`
+	ID    string `json:"id"`
+	SubID string `json:"sub_id,omitempty"`
 	share.Server
 }
 
+// State is everything servers.json holds. It is one file, written atomically,
+// so servers, the chains through them and the primary pick never disagree.
+type State struct {
+	Servers []Entry `json:"servers"`
+	Chains  []Chain `json:"chains"`
+	// Primary is the ID of the server or chain the "proxy" selector defaults
+	// to; "" means auto (fastest by urltest) or the sole server.
+	Primary string `json:"primary,omitempty"`
+}
+
+// IsPrimary reports whether id is the primary pick.
+func (st State) IsPrimary(id string) bool { return id != "" && id == st.Primary }
+
 type Store struct {
-	Path string
+	Path string // servers.json
 	mu   sync.Mutex
 }
 
 func NewStore(path string) *Store { return &Store{Path: path} }
 
-func (s *Store) load() ([]Entry, error) {
+// ParseState decodes servers.json. Before chains it was a plain list of
+// entries, the primary one flagged with "primary": true; that form is still
+// read, and the next save rewrites it.
+func ParseState(body []byte) (State, error) {
+	var st State
+	if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 && trimmed[0] == '[' {
+		var legacy []struct {
+			Entry
+			Primary bool `json:"primary"`
+		}
+		if err := json.Unmarshal(trimmed, &legacy); err != nil {
+			return State{}, err
+		}
+		for _, e := range legacy {
+			st.Servers = append(st.Servers, e.Entry)
+			if e.Primary {
+				st.Primary = e.ID
+			}
+		}
+	} else if err := json.Unmarshal(body, &st); err != nil {
+		return State{}, err
+	}
+	if st.Servers == nil {
+		st.Servers = []Entry{}
+	}
+	if st.Chains == nil {
+		st.Chains = []Chain{}
+	}
+	for i := range st.Chains {
+		if st.Chains[i].Hops == nil {
+			st.Chains[i].Hops = []string{} // hand-edited file: never "hops": null to the UI
+		}
+	}
+	return st, nil
+}
+
+func (s *Store) load() (State, error) {
 	body, err := os.ReadFile(s.Path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return []Entry{}, nil
+			return ParseState([]byte("{}"))
 		}
-		return nil, err
+		return State{}, err
 	}
-	var list []Entry
-	if err := json.Unmarshal(body, &list); err != nil {
-		return nil, err
-	}
-	return list, nil
+	return ParseState(body)
 }
 
-func (s *Store) save(list []Entry) error {
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o755); err != nil {
+// save drops a primary pick that no longer exists (its server or chain was
+// deleted): it would otherwise sit there, pointing at nothing.
+func (s *Store) save(st State) error {
+	if st.Primary != "" && !slices.ContainsFunc(st.Servers, func(e Entry) bool { return e.ID == st.Primary }) &&
+		!slices.ContainsFunc(st.Chains, func(c Chain) bool { return c.ID == st.Primary }) {
+		st.Primary = ""
+	}
+	return writeJSONAtomic(s.Path, st)
+}
+
+// writeJSONAtomic writes v as indented JSON via tmp+rename, so a crash never
+// leaves a half-written file behind.
+func writeJSONAtomic(path string, v any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	body, err := json.MarshalIndent(list, "", "  ")
+	body, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := s.Path + ".new"
+	tmp := path + ".new"
 	if err := os.WriteFile(tmp, body, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.Path)
+	return os.Rename(tmp, path)
 }
 
 func (s *Store) List() ([]Entry, error) {
+	st, err := s.Snapshot()
+	return st.Servers, err
+}
+
+// Snapshot returns the whole stored state: servers, chains and the primary
+// pick, consistent with each other.
+func (s *Store) Snapshot() (State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.load()
 }
 
 // Save adds a new entry (when ID is empty) or replaces an existing one by ID.
-// Returns the stored entry (with its ID). The Primary flag is owned by
-// SetPrimary and SubID by SyncSub: both are kept from the stored entry, never
-// taken from e.
+// Returns the stored entry (with its ID). SubID is owned by SyncSub: it is
+// kept from the stored entry, never taken from e.
 func (s *Store) Save(e Entry) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	list, err := s.load()
+	st, err := s.load()
 	if err != nil {
 		return Entry{}, err
 	}
-	e.Primary = false
 	e.SubID = ""
 	if e.ID == "" {
 		e.ID = newID()
-		list = append(list, e)
+		st.Servers = append(st.Servers, e)
 	} else {
 		replaced := false
-		for i := range list {
-			if list[i].ID == e.ID {
-				e.Primary = list[i].Primary
-				e.SubID = list[i].SubID
-				list[i] = e
+		for i := range st.Servers {
+			if st.Servers[i].ID == e.ID {
+				e.SubID = st.Servers[i].SubID
+				st.Servers[i] = e
 				replaced = true
 				break
 			}
 		}
 		if !replaced {
-			list = append(list, e)
+			st.Servers = append(st.Servers, e)
 		}
 	}
-	if err := s.save(list); err != nil {
+	if err := s.save(st); err != nil {
 		return Entry{}, err
 	}
 	return e, nil
 }
 
-func (s *Store) Delete(id string) error {
+// Delete removes the entry with the given ID (no-op if absent), and returns
+// warnings for what that breaks (see changeWarnings). With dryRun it only
+// returns the warnings: the UI shows them before asking to confirm.
+func (s *Store) Delete(id string, dryRun bool) ([]string, error) {
+	return s.deleteWhere(func(e Entry) bool { return e.ID == id }, dryRun)
+}
+
+func (s *Store) deleteWhere(drop func(Entry) bool, dryRun bool) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	list, err := s.load()
+	st, err := s.load()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	out := list[:0]
-	for _, e := range list {
-		if e.ID != id {
-			out = append(out, e)
+	next := st
+	next.Servers = slices.DeleteFunc(slices.Clone(st.Servers), drop)
+	if !dryRun {
+		if err := s.save(next); err != nil {
+			return nil, err
 		}
 	}
-	return s.save(out)
+	return changeWarnings(st, next), nil
 }
 
 // SyncSub replaces the entries owned by subscription subID with fresh, in
-// order. Servers that match an existing entry (same type, address and
-// credentials) keep its ID and Primary flag, so a refresh doesn't lose the
-// user's main-server pick. The block stays where the subscription's first
-// entry was; a new subscription is appended. Reports whether anything changed.
-func (s *Store) SyncSub(subID string, fresh []share.Server) (bool, error) {
+// order. A fresh server that matches an old entry keeps its ID, so a refresh
+// doesn't lose the primary pick or break the chains through it. Matching
+// goes from strict to loose, each pass over what's left: address,
+// credentials and name; address and name (rotated credentials); address and
+// credentials (a new name: providers put live stats in it). Duplicates pair
+// in order. A server that changed more than that gets a new ID, and what
+// this breaks is reported. The block stays where the subscription's first
+// entry was; a new subscription is appended. Reports whether anything
+// changed, and warnings for what the change broke (see changeWarnings).
+func (s *Store) SyncSub(subID string, fresh []share.Server) (bool, []string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	list, err := s.load()
+	st, err := s.load()
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	pos := -1
 	var old []Entry
-	rest := make([]Entry, 0, len(list))
-	for _, e := range list {
+	rest := make([]Entry, 0, len(st.Servers))
+	for _, e := range st.Servers {
 		if e.SubID == subID {
 			if pos < 0 {
 				pos = len(rest)
@@ -155,55 +230,60 @@ func (s *Store) SyncSub(subID string, fresh []share.Server) (bool, error) {
 		pos = len(rest)
 	}
 
-	byKey := map[string][]Entry{}
-	for _, e := range old {
-		k := serverKey(e.Server)
-		byKey[k] = append(byKey[k], e)
-	}
-	next := make([]Entry, 0, len(fresh))
-	for _, srv := range fresh {
-		e := Entry{SubID: subID, Server: srv}
-		k := serverKey(srv)
-		if m := byKey[k]; len(m) > 0 {
-			e.ID, e.Primary = m[0].ID, m[0].Primary
-			byKey[k] = m[1:]
-		} else {
-			e.ID = newID()
+	next := make([]Entry, len(fresh))
+	taken := make([]bool, len(old))
+	for _, key := range []func(share.Server) string{
+		func(v share.Server) string { return addrKey(v) + "|" + credKey(v) + "|" + nameKey(v) },
+		func(v share.Server) string { return addrKey(v) + "|" + nameKey(v) },
+		func(v share.Server) string { return addrKey(v) + "|" + credKey(v) },
+	} {
+		oldBy := map[string][]int{}
+		for i, e := range old {
+			if !taken[i] {
+				oldBy[key(e.Server)] = append(oldBy[key(e.Server)], i)
+			}
 		}
-		next = append(next, e)
+		for j, srv := range fresh {
+			if is := oldBy[key(srv)]; next[j].ID == "" && len(is) > 0 {
+				next[j] = Entry{ID: old[is[0]].ID, SubID: subID, Server: srv}
+				taken[is[0]] = true
+				oldBy[key(srv)] = is[1:]
+			}
+		}
+	}
+	for j, srv := range fresh {
+		if next[j].ID == "" {
+			next[j] = Entry{ID: newID(), SubID: subID, Server: srv}
+		}
 	}
 	if entriesEqual(old, next) {
-		return false, nil
+		return false, nil, nil
 	}
-	out := make([]Entry, 0, len(rest)+len(next))
-	out = append(out, rest[:pos]...)
-	out = append(out, next...)
-	out = append(out, rest[pos:]...)
-	return true, s.save(out)
+	after := st
+	after.Servers = make([]Entry, 0, len(rest)+len(next))
+	after.Servers = append(after.Servers, rest[:pos]...)
+	after.Servers = append(after.Servers, next...)
+	after.Servers = append(after.Servers, rest[pos:]...)
+	if err := s.save(after); err != nil {
+		return false, nil, err
+	}
+	return true, changeWarnings(st, after), nil
 }
 
-// DeleteSub removes every entry owned by subscription subID.
-func (s *Store) DeleteSub(subID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	list, err := s.load()
-	if err != nil {
-		return err
-	}
-	out := list[:0]
-	for _, e := range list {
-		if e.SubID != subID {
-			out = append(out, e)
-		}
-	}
-	return s.save(out)
+// DeleteSub removes every entry owned by subscription subID, and returns
+// warnings for what that breaks (see changeWarnings). With dryRun it only
+// returns the warnings.
+func (s *Store) DeleteSub(subID string, dryRun bool) ([]string, error) {
+	return s.deleteWhere(func(e Entry) bool { return e.SubID == subID }, dryRun)
 }
 
-// serverKey identifies "the same server" across subscription refreshes: the
-// name is excluded (providers often put live stats in it).
-func serverKey(v share.Server) string {
-	return strings.Join([]string{v.Type, strings.ToLower(v.Server), itoa(v.ServerPort), v.UUID, v.Password}, "|")
+func addrKey(v share.Server) string {
+	return strings.Join([]string{v.Type, strings.ToLower(v.Server), itoa(v.ServerPort)}, "|")
 }
+
+func credKey(v share.Server) string { return v.UUID + "|" + v.Password }
+
+func nameKey(v share.Server) string { return strings.TrimSpace(v.Name) }
 
 func entriesEqual(a, b []Entry) bool {
 	if len(a) != len(b) {
@@ -222,74 +302,51 @@ func entriesEqual(a, b []Entry) bool {
 // ErrNotFound is returned by SetPrimary for an unknown ID.
 var ErrNotFound = errors.New("server not found")
 
-// SetPrimary marks the entry with the given ID as primary and clears the flag
-// on all others. An empty id clears it everywhere (auto mode).
-func (s *Store) SetPrimary(id string) error {
+// ErrChainBroken is returned by SetPrimary for a chain that can't be built
+// (a hop server is gone): it isn't in the config, so it can't be the pick.
+// The returned error wraps it with the reason (Tags.BrokenReason).
+var ErrChainBroken = errors.New("цепочка сломана")
+
+// SetPrimary makes the server or chain with the given ID the primary pick; an
+// empty id clears it (auto mode). Returns the tag layout of the saved state.
+func (s *Store) SetPrimary(id string) (Tags, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	list, err := s.load()
+	st, err := s.load()
 	if err != nil {
-		return err
+		return Tags{}, err
 	}
-	found := id == ""
-	for i := range list {
-		list[i].Primary = list[i].ID == id && id != ""
-		found = found || list[i].Primary
-	}
-	if !found {
-		return ErrNotFound
-	}
-	return s.save(list)
-}
-
-// PrimaryTag returns the outbound tag of the primary entry among list (tags
-// as produced by UniqueTags), or "" when none is marked.
-func PrimaryTag(list []Entry, tags []string) string {
-	for i, e := range list {
-		if e.Primary && i < len(tags) {
-			return tags[i]
+	tags := Layout(st)
+	if _, isServer := tags.Index[id]; id != "" && !isServer {
+		i := slices.IndexFunc(st.Chains, func(c Chain) bool { return c.ID == id })
+		switch {
+		case i < 0:
+			return Tags{}, ErrNotFound
+		case tags.Broken(i):
+			return Tags{}, fmt.Errorf("%w: %s", ErrChainBroken, tags.BrokenReason(i))
 		}
 	}
-	return ""
+	st.Primary = id
+	if err := s.save(st); err != nil {
+		return Tags{}, err
+	}
+	return Layout(st), nil
 }
 
 var tagSanitize = regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)
 
 // Tag returns a sing-box outbound tag for an entry: a sanitized name, or a
 // fallback based on the ID. Uniqueness across the list is the caller's job
-// (see UniqueTags).
+// (see Layout). "chain-" belongs to chains (see Chain.Tag): a server named
+// "chain-foo" is tagged "server-chain-foo", so it can't take a chain's tag.
+// So is a server named "chain": its duplicates would be suffixed into
+// "chain-2", the tag of a chain named "2".
 func (e Entry) Tag() string {
-	name := strings.TrimSpace(e.Name)
-	if name == "" {
-		return "server-" + shortID(e.ID)
-	}
-	t := tagSanitize.ReplaceAllString(name, "-")
-	t = strings.Trim(t, "-")
-	if t == "" {
-		return "server-" + shortID(e.ID)
+	t := sanitizeTag(e.Name, "server-"+shortID(e.ID))
+	if t == strings.TrimSuffix(chainTagPrefix, "-") || strings.HasPrefix(t, chainTagPrefix) {
+		t = "server-" + t
 	}
 	return t
-}
-
-// UniqueTags returns tags for the entries, de-duplicating collisions with a
-// numeric suffix so every outbound tag is unique.
-func UniqueTags(list []Entry) []string {
-	seen := map[string]int{}
-	out := make([]string, len(list))
-	for i, e := range list {
-		base := e.Tag()
-		t := base
-		for {
-			if seen[t] == 0 {
-				seen[t] = 1
-				break
-			}
-			seen[base]++
-			t = base + "-" + itoa(seen[base])
-		}
-		out[i] = t
-	}
-	return out
 }
 
 func newID() string {

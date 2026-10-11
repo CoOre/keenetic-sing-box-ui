@@ -140,8 +140,22 @@ export interface Server {
   disable_sni?: boolean;
 }
 
+// A chain: traffic enters through hops[0] and each next server is dialed
+// through the previous one (sing-box detour); the last hop is the exit.
+export interface Chain {
+  id?: string;
+  name: string;
+  hops: string[]; // server IDs, entry first
+  primary?: boolean; // read-only: managed via serverSetPrimary
+  tag?: string; // read-only: the chain's outbound tag in the generated config
+  missing?: string[]; // read-only: hop IDs whose servers are gone
+  broken?: boolean; // read-only: left out of the config
+}
+
 export interface ServersState {
   servers: Server[];
+  chains: Chain[];
+  max_chain_hops: number; // the backend's chain length limit
   selected?: string; // live "proxy" selector: server tag, "auto" or "direct"
   auto_now?: string; // server urltest picked, when selected === "auto"
 }
@@ -161,6 +175,7 @@ export interface ServersApplyResult {
   servers: number;
   firewall_mode?: string;
   firewall_error?: string;
+  warnings?: string[]; // non-fatal, e.g. chains skipped for a missing server
 }
 
 export interface SingboxSettings {
@@ -332,6 +347,14 @@ export interface SubRefreshResult {
   changed: boolean;
   apply?: ServersApplyResult;
   apply_error?: string;
+  warnings?: string[]; // what this refresh broke: the primary server, chains through a dropped server
+  state_error?: string; // servers synced, but the subscription's own state wasn't saved
+}
+
+// DELETE /api/servers|chains|subs/{id}: what the deletion breaks (with
+// ?dry_run=1, would break): the primary pick, chains through a deleted server.
+export interface DeleteResult {
+  warnings?: string[];
 }
 
 export interface ListSource {

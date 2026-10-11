@@ -92,6 +92,8 @@ func Register(mux *http.ServeMux, a *auth.Authenticator, d *Deps) {
 		mux.Handle("DELETE /api/servers/{id}", protect(http.HandlerFunc(h.serversDelete)))
 		mux.Handle("POST /api/servers/apply", protect(http.HandlerFunc(h.serversApply)))
 		mux.Handle("POST /api/servers/primary", protect(http.HandlerFunc(h.serversPrimary)))
+		mux.Handle("POST /api/chains", protect(http.HandlerFunc(h.chainsSave)))
+		mux.Handle("DELETE /api/chains/{id}", protect(http.HandlerFunc(h.chainsDelete)))
 	}
 
 	if d.Settings != nil {
@@ -1018,17 +1020,21 @@ func (h *handlers) serversParse(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) serversList(w http.ResponseWriter, r *http.Request) {
-	list, err := h.d.Servers.List()
+	st, err := h.d.Servers.Snapshot()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	tags := servers.UniqueTags(list)
-	views := make([]serverView, len(list))
-	for i, e := range list {
-		views[i] = serverView{Entry: e, Tag: tags[i]}
+	tags := servers.Layout(st)
+	views := make([]serverView, len(st.Servers))
+	for i, e := range st.Servers {
+		views[i] = serverView{Entry: e, Tag: tags.Servers[i], Primary: st.IsPrimary(e.ID)}
 	}
-	resp := serversListResp{Servers: views}
+	resp := serversListResp{
+		Servers:      views,
+		Chains:       chainViews(st, tags),
+		MaxChainHops: servers.MaxChainHops,
+	}
 	// Live selector state is best-effort: sing-box may be stopped.
 	if c := h.clashClient(); c != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
@@ -1044,14 +1050,19 @@ func (h *handlers) serversList(w http.ResponseWriter, r *http.Request) {
 }
 
 // serverView is a stored entry plus its outbound tag in the generated config,
-// so the UI can match it against the live selector state.
+// so the UI can match it against the live selector state, and whether it's
+// the primary pick.
 type serverView struct {
 	servers.Entry
-	Tag string `json:"tag"`
+	Tag     string `json:"tag"`
+	Primary bool   `json:"primary,omitempty"`
 }
 
 type serversListResp struct {
 	Servers []serverView `json:"servers"`
+	Chains  []chainView  `json:"chains"`
+	// MaxChainHops is the chain length limit SaveChain enforces.
+	MaxChainHops int `json:"max_chain_hops"`
 	// Selected is where the "proxy" selector points right now (a server tag,
 	// "auto" or "direct"); empty when sing-box/Clash API is unreachable.
 	Selected string `json:"selected,omitempty"`
@@ -1087,31 +1098,25 @@ func (h *handlers) serversPrimary(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := h.d.Servers.SetPrimary(req.ID); err != nil {
+	tags, err := h.d.Servers.SetPrimary(req.ID)
+	if err != nil {
+		// A broken chain isn't in the config: making it primary would silently
+		// fall back to auto, so SetPrimary refuses it.
 		code := http.StatusInternalServerError
-		if errors.Is(err, servers.ErrNotFound) {
+		switch {
+		case errors.Is(err, servers.ErrNotFound):
 			code = http.StatusNotFound
+		case errors.Is(err, servers.ErrChainBroken):
+			code = http.StatusConflict
 		}
 		writeErr(w, code, err)
 		return
 	}
-	list, err := h.d.Servers.List()
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+	// The same pick the next apply makes the selector default.
+	target := config.DefaultPick(tags.Primary, tags.Servers, tags.Chains)
+	if target == config.OutboundDirectTag {
+		writeErr(w, http.StatusBadRequest, errors.New("нет серверов"))
 		return
-	}
-	tags := servers.UniqueTags(list)
-	target := servers.PrimaryTag(list, tags)
-	if target == "" {
-		switch {
-		case len(tags) > 1:
-			target = config.OutboundAutoTag
-		case len(tags) == 1:
-			target = tags[0]
-		default:
-			writeErr(w, http.StatusBadRequest, errors.New("нет серверов"))
-			return
-		}
 	}
 	resp := serversPrimaryResp{Selected: target}
 	if c := h.clashClient(); c == nil {
@@ -1164,12 +1169,22 @@ func (h *handlers) serversSave(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, saved)
 }
 
+// deleteResp says what a deletion breaks: the primary server or chain, chains
+// through a deleted server. With ?dry_run=1 nothing is deleted: the UI shows
+// the warnings in its confirmation.
+type deleteResp struct {
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+func dryRun(r *http.Request) bool { return r.URL.Query().Get("dry_run") == "1" }
+
 func (h *handlers) serversDelete(w http.ResponseWriter, r *http.Request) {
-	if err := h.d.Servers.Delete(r.PathValue("id")); err != nil {
+	warnings, err := h.d.Servers.Delete(r.PathValue("id"), dryRun(r))
+	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, deleteResp{Warnings: warnings})
 }
 
 type serversApplyReq struct {
@@ -1184,6 +1199,8 @@ type serversApplyResp struct {
 	Servers       int                   `json:"servers"`
 	FirewallMode  string                `json:"firewall_mode,omitempty"`
 	FirewallError string                `json:"firewall_error,omitempty"`
+	// Warnings are non-fatal: e.g. chains skipped for a missing hop server.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // transparentConfigFromSettings maps persisted UI settings to a firewall
@@ -1230,19 +1247,13 @@ func (h *handlers) serversApply(w http.ResponseWriter, r *http.Request) {
 // auto-apply. Returns the HTTP status to report; a failed sing-box check is
 // status 400 with a nil error (the details are in resp.Check).
 func (h *handlers) applyServers(ctx context.Context, restart bool) (serversApplyResp, int, error) {
-	list, err := h.d.Servers.List()
+	state, err := h.d.Servers.Snapshot()
 	if err != nil {
 		return serversApplyResp{}, http.StatusInternalServerError, err
 	}
-	tags := servers.UniqueTags(list)
-	primaryTag := servers.PrimaryTag(list, tags)
-	outs := make([]config.ProxyOutbound, 0, len(list))
-	for i, e := range list {
-		obj := e.Server.ToOutbound(tags[i])
-		if obj == nil {
-			return serversApplyResp{}, http.StatusBadRequest, fmt.Errorf("server %q: unsupported type %q", e.Name, e.Type)
-		}
-		outs = append(outs, config.ProxyOutbound{Tag: tags[i], Object: obj})
+	outs, primaryTag, warnings, err := buildOutbounds(state)
+	if err != nil {
+		return serversApplyResp{}, http.StatusBadRequest, err
 	}
 
 	st := settings.Defaults()
@@ -1279,7 +1290,7 @@ func (h *handlers) applyServers(ctx context.Context, restart bool) (serversApply
 		return serversApplyResp{}, http.StatusInternalServerError, err
 	}
 
-	resp := serversApplyResp{Servers: len(list)}
+	resp := serversApplyResp{Servers: len(state.Servers), Warnings: warnings}
 	// Validate before writing.
 	if h.d.Checker != nil {
 		cr, cerr := h.d.Checker.CheckContent(ctx, body)
@@ -1389,7 +1400,7 @@ func (h *handlers) subsAdd(w http.ResponseWriter, r *http.Request) {
 	res, err := h.d.SubRunner.Refresh(r.Context(), sub.ID)
 	if err != nil {
 		_ = h.d.Subs.Delete(sub.ID)
-		_ = h.d.Servers.DeleteSub(sub.ID)
+		_, _ = h.d.Servers.DeleteSub(sub.ID, false)
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
@@ -1430,11 +1441,18 @@ func (h *handlers) subsUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sub)
 }
 
-// subsDelete removes the subscription together with its servers. The running
-// config keeps them until the next apply.
+// subsDelete removes the subscription together with its servers (see
+// deleteResp for ?dry_run=1). The running config keeps them until the next
+// apply.
 func (h *handlers) subsDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := h.d.Subs.Delete(id); err != nil {
+	var err error
+	if dryRun(r) {
+		_, err = h.d.Subs.Get(id)
+	} else {
+		err = h.d.Subs.Delete(id)
+	}
+	if err != nil {
 		code := http.StatusInternalServerError
 		if errors.Is(err, subs.ErrNotFound) {
 			code = http.StatusNotFound
@@ -1442,11 +1460,12 @@ func (h *handlers) subsDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, code, err)
 		return
 	}
-	if err := h.d.Servers.DeleteSub(id); err != nil {
+	warnings, err := h.d.Servers.DeleteSub(id, dryRun(r))
+	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, deleteResp{Warnings: warnings})
 }
 
 func (h *handlers) subsRefresh(w http.ResponseWriter, r *http.Request) {

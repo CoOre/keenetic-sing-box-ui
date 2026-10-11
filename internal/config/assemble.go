@@ -53,7 +53,7 @@ type AssembleOptions struct {
 	// Combined with RouteCIDR at assembly time.
 	ExtraRouteCIDR []string
 
-	// DefaultOutbound, when it names one of the servers, is the proxy
+	// DefaultOutbound, when it names one of the servers or chains, is the proxy
 	// selector's default instead of auto/the sole server.
 	DefaultOutbound string
 	// Multiplex enables h2mux on the proxy server outbounds (see settings.Multiplex).
@@ -67,7 +67,21 @@ type AssembleOptions struct {
 type ProxyOutbound struct {
 	Tag    string
 	Object map[string]any
+	Role   OutboundRole
 }
+
+// OutboundRole says which groups an outbound joins.
+type OutboundRole int
+
+const (
+	// RoleServer is a plain server: in the "proxy" selector and in "auto".
+	RoleServer OutboundRole = iota
+	// RoleChain is a chain's exit (dialed through its hops via detour): in the
+	// selector only — urltest would rarely pick a multi-hop path anyway.
+	RoleChain
+	// RoleHop is a chain's intermediate clone: in no group, only a detour.
+	RoleHop
+)
 
 // Assemble builds a complete, service-managed sing-box router config: a tun
 // inbound (gvisor stack by default — avoids the sing-tun system-stack panic),
@@ -108,6 +122,7 @@ func Assemble(opts AssembleOptions, servers []ProxyOutbound) ([]byte, error) {
 	// Build outbounds: each server, then selector + auto(urltest) + direct.
 	outbounds := make([]any, 0, len(servers)+3)
 	serverTags := make([]string, 0, len(servers))
+	var chainTags []string
 	for _, s := range servers {
 		obj := s.Object
 		if obj == nil {
@@ -120,10 +135,14 @@ func Assemble(opts AssembleOptions, servers []ProxyOutbound) ([]byte, error) {
 		if tag == "" {
 			continue
 		}
-		if typ, _ := obj["type"].(string); opts.Multiplex && share.SupportsMultiplex(typ) {
+		if typ, _ := obj["type"].(string); opts.Multiplex && s.Role == RoleServer && share.SupportsMultiplex(typ) {
 			// Collapse many short-lived proxy connections (e.g. Telegram's DC
 			// fan-out) onto a few persistent tunnels, removing the per-connection
 			// TLS handshake through the proxy chain. Server must accept sing-box mux.
+			// Plain servers only: a chain's entry is its first server's own
+			// outbound, so the chain already rides that mux; muxing the
+			// detoured hops too would nest h2mux in h2mux and stack the
+			// head-of-line blocking at every hop.
 			obj["multiplex"] = map[string]any{
 				"enabled":         true,
 				"protocol":        "h2mux",
@@ -131,12 +150,17 @@ func Assemble(opts AssembleOptions, servers []ProxyOutbound) ([]byte, error) {
 				"padding":         false,
 			}
 		}
-		serverTags = append(serverTags, tag)
+		switch s.Role {
+		case RoleServer:
+			serverTags = append(serverTags, tag)
+		case RoleChain:
+			chainTags = append(chainTags, tag)
+		}
 		outbounds = append(outbounds, obj)
 	}
 
-	// proxy selector lists the servers (+auto if >1) and direct.
-	selectorList := append([]string{}, serverTags...)
+	// proxy selector lists the servers (+auto if >1), chains and direct.
+	selectorList := append(append([]string{}, serverTags...), chainTags...)
 	if len(serverTags) > 1 {
 		selectorList = append([]string{OutboundAutoTag}, selectorList...)
 		outbounds = append(outbounds, map[string]any{
@@ -149,14 +173,7 @@ func Assemble(opts AssembleOptions, servers []ProxyOutbound) ([]byte, error) {
 	}
 	selectorList = append(selectorList, OutboundDirectTag)
 
-	defaultPick := OutboundDirectTag
-	if opts.DefaultOutbound != "" && slices.Contains(serverTags, opts.DefaultOutbound) {
-		defaultPick = opts.DefaultOutbound
-	} else if len(serverTags) > 1 {
-		defaultPick = OutboundAutoTag
-	} else if len(serverTags) == 1 {
-		defaultPick = serverTags[0]
-	}
+	defaultPick := DefaultPick(opts.DefaultOutbound, serverTags, chainTags)
 
 	outbounds = append(outbounds,
 		map[string]any{
@@ -362,4 +379,19 @@ func routeRulesFor(opts AssembleOptions) []map[string]any {
 		}
 	}
 	return rules
+}
+
+// DefaultPick is the "proxy" selector default: want when it names one of the
+// servers or chains, else auto (it exists with 2+ servers; chains never join
+// it), else the sole server, else direct.
+func DefaultPick(want string, serverTags, chainTags []string) string {
+	switch {
+	case want != "" && (slices.Contains(serverTags, want) || slices.Contains(chainTags, want)):
+		return want
+	case len(serverTags) > 1:
+		return OutboundAutoTag
+	case len(serverTags) == 1:
+		return serverTags[0]
+	}
+	return OutboundDirectTag
 }

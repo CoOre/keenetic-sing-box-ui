@@ -2,6 +2,7 @@
   import { api, ApiError } from "../api";
   import type { Subscription, SubInput, SubRefreshResult } from "../types";
   import Icon from "./Icon.svelte";
+  import DeleteImpact from "./DeleteImpact.svelte";
   import FormSection from "./FormSection.svelte";
 
   // onchanged: the server set changed (refresh, add, delete) — reload the list.
@@ -22,6 +23,10 @@
   let busy = $state("");
   let error = $state("");
   let notice = $state("");
+  // What the last refresh or delete broke: the primary server, chains.
+  let warnings = $state<string[]>([]);
+  // The warnings are about a config already applied (auto-apply), not one to come.
+  let warningsApplied = $state(false);
   let formError = $state("");
   let confirmDelete = $state<Subscription | null>(null);
 
@@ -52,6 +57,8 @@
 
   function report(r: SubRefreshResult) {
     const name = r.subscription.name || hostOf(r.subscription.url);
+    warnings = [...(r.warnings ?? []), ...(r.apply?.warnings ?? [])];
+    warningsApplied = !!r.apply?.applied;
     if (!r.changed) {
       notice = `«${name}»: без изменений (${r.subscription.last_count} серв.).`;
     } else if (r.apply_error) {
@@ -61,6 +68,9 @@
     } else {
       notice = `«${name}»: серверы обновлены (${r.subscription.last_count}). Нажмите «Применить и перезапустить».`;
     }
+    if (r.state_error) {
+      error = `«${name}»: серверы обновлены, но состояние подписки не сохранено: ${r.state_error}`;
+    }
   }
 
   async function save() {
@@ -69,7 +79,7 @@
       if (editor === "new") {
         const r = await api.subAdd(form);
         editor = null;
-        error = ""; notice = "";
+        error = ""; notice = ""; warnings = [];
         report(r);
         onchanged();
       } else if (editor) {
@@ -84,7 +94,7 @@
   }
 
   async function refresh(s: Subscription) {
-    busy = "refresh:" + s.id; error = ""; notice = "";
+    busy = "refresh:" + s.id; error = ""; notice = ""; warnings = [];
     try {
       const r = await api.subRefresh(s.id);
       report(r);
@@ -99,9 +109,10 @@
 
   async function doDelete(s: Subscription) {
     confirmDelete = null;
-    busy = "delete:" + s.id; error = ""; notice = "";
+    busy = "delete:" + s.id; error = ""; notice = ""; warnings = [];
     try {
-      await api.subDelete(s.id);
+      warnings = (await api.subDelete(s.id)).warnings ?? [];
+      warningsApplied = false;
       notice = `Подписка «${s.name || hostOf(s.url)}» удалена вместе с серверами. Нажмите «Применить и перезапустить».`;
       onchanged();
     } catch (e) {
@@ -197,6 +208,12 @@
     {/each}
     {#if error}<div class="callout err"><Icon name="alert" size={17} /><div class="callout-body">{error}</div></div>{/if}
     {#if notice}<div class="callout ok"><Icon name="check" size={17} /><div class="callout-body">{notice}</div></div>{/if}
+    {#if warnings.length}
+      <div class="callout warn">
+        <Icon name="alert" size={17} />
+        <div class="callout-body"><b>{warningsApplied ? "Что перестало работать" : "Что перестанет работать после применения"}</b>{#each warnings as w}<div>{w}</div>{/each}</div>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -262,6 +279,7 @@
 {/if}
 
 {#if confirmDelete}
+  {@const deleteID = confirmDelete.id}
   <div class="modal-scrim" onmousedown={(e) => { if (e.target === e.currentTarget) confirmDelete = null; }}>
     <div class="modal">
       <div class="modal-head">
@@ -269,6 +287,7 @@
         <div style="flex:1;padding-top:2px">
           <h3>Удалить «{confirmDelete.name || hostOf(confirmDelete.url)}»?</h3>
           <p>Вместе с подпиской удалятся её серверы ({confirmDelete.last_count}). Изменения вступят в силу после «Применить и перезапустить».</p>
+          <DeleteImpact load={() => api.subDelete(deleteID, true)} />
         </div>
       </div>
       <div class="modal-foot">
