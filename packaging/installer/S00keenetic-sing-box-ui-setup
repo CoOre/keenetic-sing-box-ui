@@ -1,0 +1,24 @@
+#!/bin/sh
+# One-shot hook of the keenetic-sing-box-ui installer archive (built by
+# scripts/mkinstaller). KeeneticOS unpacks the archive into /opt, then runs
+# init scripts with "start":
+#   - fresh disk: every executable in /opt/etc/init.d in name order (this hook
+#     first, then Entware's doinstall, which installs Entware), under the
+#     firmware /bin/sh — only shell builtins are available at this point;
+#   - disk that already has Entware: its initrc, rc.unslung, runs S* scripts.
+# The hook hands off to setup.sh in the background, detached from NDM's output
+# pipe (NDM waits for it to close). setup.sh deletes the hook when it
+# succeeds; until then it retries on every boot.
+case "$1" in
+start)
+	_ksbui_dir=/opt/share/keenetic-sing-box-ui/install
+	if [ -f "$_ksbui_dir/setup.sh" ]; then
+		# The archive carries Entware's opkg.conf aside so that it does not
+		# overwrite a customised one on an existing install.
+		[ -f /opt/etc/opkg.conf ] || while IFS= read -r _ksbui_l; do
+			echo "$_ksbui_l"
+		done <"$_ksbui_dir/opkg.conf" >/opt/etc/opkg.conf
+		/opt/bin/sh "$_ksbui_dir/setup.sh" </dev/null >/dev/null 2>&1 &
+	fi
+	;;
+esac

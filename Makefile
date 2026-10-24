@@ -11,8 +11,10 @@ LDFLAGS      := -s -w \
                 -X main.date=$(DATE)
 GOFLAGS      := -trimpath -ldflags '$(LDFLAGS)'
 NPM_CACHE    ?= /tmp/ksbui-npmcache
+INSTALLER    := $(DIST_DIR)/$(BIN_NAME)-installer-aarch64.tar.gz
+ENTWARE_INSTALLER ?= http://bin.entware.net/aarch64-k3.10/installer/aarch64-installer.tar.gz
 
-.PHONY: all build build-arm64 build-web web-install run test lint hooks tidy clean package install-router changelog release
+.PHONY: all build build-arm64 build-web web-install run test lint hooks tidy clean installer package install install-router changelog release
 
 all: build
 
@@ -55,15 +57,27 @@ tidy:
 clean:
 	rm -rf $(DIST_DIR)
 
-package: build-arm64
+# Установочный архив: Entware + бинарник + хук установки (packaging/installer).
+# KeeneticOS ставит его сам: opkg disk <диск>:/ <URL архива>.
+installer: build-arm64
+	go run ./scripts/mkinstaller -entware $(ENTWARE_INSTALLER) \
+		-bin $(DIST_DIR)/$(BIN_NAME)-linux-arm64 -version $(VERSION) -o $(INSTALLER)
+
+package: installer
 	mkdir -p $(DIST_DIR)/pkg/opt/bin
 	mkdir -p $(DIST_DIR)/pkg/opt/etc/init.d
 	cp $(DIST_DIR)/$(BIN_NAME)-linux-arm64 $(DIST_DIR)/pkg/opt/bin/$(BIN_NAME)
 	cp packaging/entware/S99keenetic-sing-box-ui $(DIST_DIR)/pkg/opt/etc/init.d/S99keenetic-sing-box-ui
 	chmod +x $(DIST_DIR)/pkg/opt/bin/$(BIN_NAME) $(DIST_DIR)/pkg/opt/etc/init.d/S99keenetic-sing-box-ui
 	tar -czf $(DIST_DIR)/$(BIN_NAME)_$(VERSION)_aarch64.tar.gz -C $(DIST_DIR)/pkg .
-	cd $(DIST_DIR) && shasum -a 256 $(BIN_NAME)_$(VERSION)_aarch64.tar.gz > sha256sums.txt
+	cd $(DIST_DIR) && shasum -a 256 $(BIN_NAME)_$(VERSION)_aarch64.tar.gz $(notdir $(INSTALLER)) > sha256sums.txt
 
+# Установка на роутер через его HTTP API: компоненты, Entware, UI.
+# Свежесобранный архив раздаётся роутеру с этой машины (нужен python3).
+install: installer
+	scripts/install.sh --file $(INSTALLER)
+
+# Деплой dev-сборки на роутер с уже настроенным Entware (SFTP).
 install-router:
 	scripts/install-router.sh
 

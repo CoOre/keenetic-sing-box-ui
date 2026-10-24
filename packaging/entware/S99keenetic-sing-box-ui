@@ -1,10 +1,79 @@
 #!/bin/sh
+# Init script for keenetic-sing-box-ui. Self-contained (no rc.func): it keeps
+# a pidfile and appends the service output to a log that is rotated on start,
+# so it never grows unbounded on the router's flash.
+#
+# Entware's rc.unslung is written to source S* scripts (". $i start"), so this
+# file does not call `exit` on a normal path and keeps its names prefixed.
 
-ENABLED=yes
-PROCS=keenetic-sing-box-ui
-ARGS="--listen 0.0.0.0:9091"
-PREARGS=""
-DESC="Keenetic sing-box UI"
 PATH=/opt/sbin:/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-. /opt/etc/init.d/rc.func
+KSBUI_BIN=/opt/bin/keenetic-sing-box-ui
+KSBUI_ARGS="--listen 0.0.0.0:9091"
+KSBUI_LOG=/opt/var/log/keenetic-sing-box-ui.log
+KSBUI_PID=/opt/var/run/keenetic-sing-box-ui.pid
+KSBUI_LOG_MAX=1048576
+
+ksbui_pid() {
+	_ksbui_pid=""
+	[ -f "$KSBUI_PID" ] && read -r _ksbui_pid <"$KSBUI_PID" 2>/dev/null
+	[ -n "$_ksbui_pid" ] && kill -0 "$_ksbui_pid" 2>/dev/null && return 0
+	# Instance started without a pidfile (older /opt/etc/initrc layout).
+	_ksbui_pid=$(pidof keenetic-sing-box-ui 2>/dev/null)
+	[ -n "$_ksbui_pid" ]
+}
+
+ksbui_start() {
+	if ksbui_pid; then
+		echo "keenetic-sing-box-ui already running (pid $_ksbui_pid)"
+		return 0
+	fi
+	if [ ! -x "$KSBUI_BIN" ]; then
+		echo "keenetic-sing-box-ui: $KSBUI_BIN not found" >&2
+		return 1
+	fi
+	mkdir -p /opt/var/log /opt/var/run
+	if [ -f "$KSBUI_LOG" ] && [ "$(wc -c <"$KSBUI_LOG")" -gt "$KSBUI_LOG_MAX" ]; then
+		mv -f "$KSBUI_LOG" "$KSBUI_LOG.1"
+	fi
+	# shellcheck disable=SC2086 # KSBUI_ARGS is a word list
+	"$KSBUI_BIN" $KSBUI_ARGS >>"$KSBUI_LOG" 2>&1 </dev/null &
+	echo $! >"$KSBUI_PID"
+	echo "keenetic-sing-box-ui started (pid $!)"
+}
+
+ksbui_stop() {
+	if ! ksbui_pid; then
+		rm -f "$KSBUI_PID"
+		echo "keenetic-sing-box-ui not running"
+		return 0
+	fi
+	# shellcheck disable=SC2086 # pidof may return several pids
+	kill $_ksbui_pid 2>/dev/null
+	_ksbui_i=0
+	while ksbui_pid && [ "$_ksbui_i" -lt 5 ]; do
+		sleep 1
+		_ksbui_i=$((_ksbui_i + 1))
+	done
+	# shellcheck disable=SC2086
+	ksbui_pid && kill -9 $_ksbui_pid 2>/dev/null
+	rm -f "$KSBUI_PID"
+	echo "keenetic-sing-box-ui stopped"
+}
+
+case "$1" in
+	start) ksbui_start ;;
+	stop | kill) ksbui_stop ;;
+	restart)
+		ksbui_stop
+		ksbui_start
+		;;
+	check | status)
+		if ksbui_pid; then
+			echo "keenetic-sing-box-ui is alive (pid $_ksbui_pid)"
+		else
+			echo "keenetic-sing-box-ui is dead"
+		fi
+		;;
+	*) echo "usage: $0 {start|stop|restart|status}" >&2 ;;
+esac
