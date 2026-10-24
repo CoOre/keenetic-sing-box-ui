@@ -187,6 +187,9 @@ func (g *Github) Install(ctx context.Context, asset Asset) error {
 	if err != nil {
 		return err
 	}
+	if _, err := AdaptInterpreter(binSrc); err != nil {
+		return err
+	}
 	return atomicInstall(binSrc, g.DestBin, 0o755)
 }
 

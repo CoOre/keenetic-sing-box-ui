@@ -13,6 +13,7 @@ linters:
         - (*os.File).Close
         - (*compress/gzip.Reader).Close
         - (*compress/gzip.Writer).Close
+        - (*debug/elf.File).Close
         - os.Remove
         - os.RemoveAll
   exclusions:

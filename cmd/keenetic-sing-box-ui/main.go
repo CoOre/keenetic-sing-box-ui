@@ -244,6 +244,15 @@ func runServer(args []string) int {
 	if err := singbox.EnsureInitScript(paths.SingBoxInit); err != nil {
 		logger.Warn("ensure sing-box init script", "err", err)
 	}
+	// Self-heal: a glibc build installed before AdaptInterpreter existed (or
+	// before a firmware upgrade dropped the glibc loader) cannot start.
+	if fileExists(paths.SingBoxBin) {
+		if patched, err := singbox.AdaptInterpreter(paths.SingBoxBin); err != nil {
+			logger.Warn("adapt sing-box interpreter", "err", err)
+		} else if patched {
+			logger.Info("sing-box now starts via the Entware loader", "bin", paths.SingBoxBin)
+		}
+	}
 	// Self-heal: if sing-box is installed but its config went missing, lay down
 	// the directories, init script and a default config so the service can run.
 	if fileExists(paths.SingBoxBin) && !fileExists(paths.SingBoxConfig) {
