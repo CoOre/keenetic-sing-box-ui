@@ -3,6 +3,8 @@
   import type { CheckResult, BackupMeta } from "../types";
   import Icon from "./Icon.svelte";
   import UpdatesCard from "./UpdatesCard.svelte";
+  import CustomConfigCard from "./CustomConfigCard.svelte";
+  import JsonEditor from "./JsonEditor.svelte";
 
   let text = $state("");
   let original = $state("");
@@ -51,16 +53,6 @@
   function format() {
     try { text = JSON.stringify(JSON.parse(text), null, 2) + "\n"; jsonError = ""; notice = "Отформатировано."; }
     catch (e) { jsonError = e instanceof Error ? e.message : "invalid JSON"; }
-  }
-
-  function onKeydown(e: KeyboardEvent) {
-    if (e.key === "Tab") {
-      e.preventDefault();
-      const ta = e.target as HTMLTextAreaElement;
-      const start = ta.selectionStart, end = ta.selectionEnd;
-      text = text.slice(0, start) + "  " + text.slice(end);
-      queueMicrotask(() => ta.setSelectionRange(start + 2, start + 2));
-    }
   }
 
   async function check() {
@@ -181,11 +173,15 @@
     <Icon name="warn" size={17} />
     <div class="callout-body">
       <b>Экспертный режим</b><br />
-      Прямое редактирование <span class="tag">/opt/etc/sing-box/config.json</span>.
       Ошибка здесь может уронить сервис — используйте только если понимаете формат sing-box.
       Перед применением выполняется <span class="tag">sing-box check</span>.
+      Свои inbound'ы, outbound'ы и правила добавляйте в «Дополнения к конфигу»: они переживают
+      пересборку конфига. Правки <span class="tag">/opt/etc/sing-box/config.json</span> в редакторе
+      ниже затрутся при следующем применении серверов или настроек.
     </div>
   </div>
+
+  <CustomConfigCard />
 
   <div class="card flush">
     <div class="card-head">
@@ -207,17 +203,7 @@
         <div class="callout warn"><Icon name="info" size={17} /><div class="callout-body">{loadError}</div></div>
       </div>
     {:else}
-      <div style="position:relative">
-        <textarea
-          class="textarea mono"
-          spellcheck="false"
-          autocomplete="off"
-          bind:value={text}
-          oninput={onInput}
-          onkeydown={onKeydown}
-          style="border:none;border-radius:0;background:#070a0e;min-height:380px;font-size:12.5px;line-height:1.7;padding:16px 18px;width:100%;resize:vertical"
-        ></textarea>
-      </div>
+      <JsonEditor bind:value={text} onchange={onInput} minHeight="380px" />
 
       {#if checkResult}
         <div style="padding:0 var(--pad) 14px">
@@ -296,7 +282,7 @@
     </div>
     <div class="card-body stack-sm">
       <p class="hint-text">
-        Архив содержит конфиг sing-box, серверы, настройки маршрутизации, списки,
+        Архив содержит конфиг sing-box, дополнения к нему, серверы, настройки маршрутизации, списки,
         TLS-сертификат и учётные данные интерфейса (токен и пароль). Достаточно,
         чтобы восстановить всё на чистом роутере. Храните файл в надёжном месте —
         внутри секреты.

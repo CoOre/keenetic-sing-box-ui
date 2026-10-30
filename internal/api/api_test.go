@@ -57,6 +57,7 @@ func newEnv(t *testing.T) *testEnv {
 		Opkg:     opkg,
 		Github:   &singbox.Github{HTTP: http.DefaultClient, Repo: singbox.DefaultRepo, DestBin: paths.SingBoxBin},
 		Config:   config.NewStore(paths.SingBoxConfig),
+		Custom:   config.NewCustomStore(filepath.Join(root, "custom.json")),
 		Checker:  ck,
 		LogPath:  paths.SingBoxLog,
 		Servers:  servers.NewStore(filepath.Join(root, "servers.json")),
@@ -69,12 +70,18 @@ func newEnv(t *testing.T) *testEnv {
 		ServersPath:       deps.Servers.Path,
 		SettingsPath:      deps.Settings.Path,
 		ListsPath:         filepath.Join(root, "lists.json"),
+		CustomPath:        deps.Custom.Path,
 		TLSCertPath:       filepath.Join(root, "tls", "cert.pem"),
 		TLSKeyPath:        filepath.Join(root, "tls", "key.pem"),
 		SingBoxConfigPath: paths.SingBoxConfig,
 		UIVersion:         "test",
 	}
 	authn := auth.NewAuthenticator(tokenForTest, auth.NewSessionStore(time.Hour))
+
+	// Port checks would otherwise bind real ports on the test machine.
+	probe := listenProbe
+	listenProbe = func(string) error { return nil }
+	t.Cleanup(func() { listenProbe = probe })
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/login", authn.Login)

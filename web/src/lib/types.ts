@@ -176,6 +176,22 @@ export interface ServersApplyResult {
   firewall_mode?: string;
   firewall_error?: string;
   warnings?: string[]; // non-fatal, e.g. chains skipped for a missing server
+  syntax_error?: CustomSyntaxError; // JSON syntax error in custom.json
+  restart?: { stdout: string; stderr: string }; // set when a restart was requested
+  restart_error?: string;
+}
+
+// Position of a JSON syntax error in custom.json (1-based).
+export interface CustomSyntaxError {
+  line: number;
+  col: number;
+  message: string;
+}
+
+export interface CustomConfig {
+  content: string;
+  exists: boolean;
+  path: string;
 }
 
 export interface SingboxSettings {

@@ -1,7 +1,7 @@
 // Package backup implements full state export/import: a single tar.gz archive
 // holding everything needed to rebuild the router setup from scratch — the
 // generated sing-box config plus the UI's own state (admin token/password,
-// servers, settings, URL-list sources, TLS keypair). The sing-box config alone
+// servers, settings, URL-list sources, custom.json, TLS keypair). The sing-box config alone
 // is not enough: it is *generated* from the servers/settings/lists stores, and
 // the UI credentials live outside it entirely.
 package backup
@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/CoOre/keenetic-sing-box-ui/internal/auth"
+	"github.com/CoOre/keenetic-sing-box-ui/internal/config"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/lists"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/servers"
 	"github.com/CoOre/keenetic-sing-box-ui/internal/settings"
@@ -54,6 +55,7 @@ type Manager struct {
 	SettingsPath      string // …/singbox-settings.json
 	ListsPath         string // …/lists.json
 	SubsPath          string // …/subs.json
+	CustomPath        string // …/custom.json (user additions to the sing-box config)
 	TLSCertPath       string // …/tls/cert.pem
 	TLSKeyPath        string // …/tls/key.pem
 	SingBoxConfigPath string // /opt/etc/sing-box/config.json
@@ -77,6 +79,7 @@ func (m *Manager) entries() []entry {
 		{"ui/singbox-settings.json", m.SettingsPath, 0o600, validateSettings},
 		{"ui/lists.json", m.ListsPath, 0o600, validateLists},
 		{"ui/subs.json", m.SubsPath, 0o600, validateSubs},
+		{"ui/custom.json", m.CustomPath, 0o600, validateCustom},
 		{"ui/tls/cert.pem", m.TLSCertPath, 0o600, validatePEM},
 		{"ui/tls/key.pem", m.TLSKeyPath, 0o600, validatePEM},
 		{"singbox/config.json", m.SingBoxConfigPath, 0o644, validateJSON},
@@ -311,6 +314,11 @@ func validateSubs(b []byte) error {
 		Subscriptions []*subs.Subscription `json:"subscriptions"`
 	}
 	return json.Unmarshal(b, &f)
+}
+
+func validateCustom(b []byte) error {
+	_, err := config.ParseCustom(b)
+	return err
 }
 
 func validatePEM(b []byte) error {

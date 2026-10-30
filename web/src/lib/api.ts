@@ -12,6 +12,7 @@ import type {
   Chain,
   ServerPrimaryResult,
   ServersApplyResult,
+  CustomConfig,
   SingboxSettings,
   KeeneticPolicy,
   ListSource,
@@ -165,6 +166,16 @@ export const api = {
   },
   configCheck(content?: string): Promise<CheckResult> {
     return request("POST", "/api/config/check", content ?? "");
+  },
+  // custom.json: additions merged into every generated config.
+  customRead(): Promise<CustomConfig> {
+    return request("GET", "/api/config/custom");
+  },
+  customCheck(content: string): Promise<ServersApplyResult> {
+    return request("POST", "/api/config/custom/check", { content });
+  },
+  customWrite(content: string, restart: boolean): Promise<ServersApplyResult> {
+    return request("PUT", "/api/config/custom", { content, restart });
   },
   async configBackups(): Promise<BackupMeta[]> {
     const r = await request<{ backups: BackupMeta[] }>("GET", "/api/config/backups");

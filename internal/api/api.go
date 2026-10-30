@@ -43,6 +43,7 @@ type Deps struct {
 	Opkg        *singbox.Opkg
 	Github      *singbox.Github
 	Config      *config.Store
+	Custom      *config.CustomStore // custom.json merged into every generated config
 	Checker     *config.Checker
 	LogPath     string
 	ClashAddr   string // sing-box clash_api external_controller, e.g. 127.0.0.1:9090
@@ -77,6 +78,11 @@ func Register(mux *http.ServeMux, a *auth.Authenticator, d *Deps) {
 	mux.Handle("POST /api/config/check", protect(http.HandlerFunc(h.configCheck)))
 	mux.Handle("GET /api/config/backups", protect(http.HandlerFunc(h.configBackups)))
 	mux.Handle("GET /api/config/backups/{name}", protect(http.HandlerFunc(h.configBackupRead)))
+	if d.Custom != nil && d.Servers != nil {
+		mux.Handle("GET /api/config/custom", protect(http.HandlerFunc(h.customRead)))
+		mux.Handle("POST /api/config/custom/check", protect(http.HandlerFunc(h.customCheck)))
+		mux.Handle("PUT /api/config/custom", protect(http.HandlerFunc(h.customWrite)))
+	}
 	mux.Handle("GET /api/logs", protect(http.HandlerFunc(h.logs)))
 	mux.Handle("GET /api/diag/net", protect(http.HandlerFunc(h.diagNet)))
 	mux.Handle("POST /api/diag/exec", protect(http.HandlerFunc(h.diagExec)))
@@ -522,6 +528,71 @@ func (h *handlers) configBackupRead(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(body)
+}
+
+// --- custom.json: user additions merged into the generated config ---
+
+type customReq struct {
+	Content string `json:"content"`
+	Restart bool   `json:"restart"`
+}
+
+func (h *handlers) customRead(w http.ResponseWriter, r *http.Request) {
+	body, err := h.d.Custom.Read()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"content": string(body),
+		"exists":  body != nil,
+		"path":    h.d.Custom.Path,
+	})
+}
+
+// customCheck validates proposed custom.json content against the config it
+// would produce, without saving anything.
+func (h *handlers) customCheck(w http.ResponseWriter, r *http.Request) {
+	var req customReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	resp := serversApplyResp{}
+	b, status, err := h.buildConfig([]byte(req.Content))
+	if err != nil {
+		if status != http.StatusBadRequest {
+			writeErr(w, status, err)
+			return
+		}
+		var se *config.SyntaxError
+		errors.As(err, &se)
+		resp.Syntax = se
+		resp.Check = config.CheckResult{Errors: []string{err.Error()}}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	resp.Servers = b.servers
+	check, warnings := h.validateConfig(r.Context(), b.body)
+	resp.Check = check
+	resp.Warnings = append(b.warnings, warnings...)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// customWrite validates, saves custom.json and applies the resulting config
+// (restarting sing-box when asked). Nothing is saved if validation fails.
+func (h *handlers) customWrite(w http.ResponseWriter, r *http.Request) {
+	var req customReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	resp, status, err := h.applyConfig(r.Context(), req.Restart, []byte(req.Content))
+	if err != nil {
+		writeErr(w, status, err)
+		return
+	}
+	writeJSON(w, status, resp)
 }
 
 // backupExport streams a tar.gz archive of the full state: sing-box config +
@@ -1200,7 +1271,10 @@ type serversApplyResp struct {
 	FirewallMode  string                `json:"firewall_mode,omitempty"`
 	FirewallError string                `json:"firewall_error,omitempty"`
 	// Warnings are non-fatal: e.g. chains skipped for a missing hop server.
-	Warnings []string `json:"warnings,omitempty"`
+	Warnings     []string `json:"warnings,omitempty"`
+	RestartError string   `json:"restart_error,omitempty"`
+	// Syntax locates a JSON syntax error in custom.json, for the editor.
+	Syntax *config.SyntaxError `json:"syntax_error,omitempty"`
 }
 
 // transparentConfigFromSettings maps persisted UI settings to a firewall
@@ -1247,13 +1321,31 @@ func (h *handlers) serversApply(w http.ResponseWriter, r *http.Request) {
 // auto-apply. Returns the HTTP status to report; a failed sing-box check is
 // status 400 with a nil error (the details are in resp.Check).
 func (h *handlers) applyServers(ctx context.Context, restart bool) (serversApplyResp, int, error) {
+	return h.applyConfig(ctx, restart, nil)
+}
+
+// builtConfig is an assembled sing-box config (generated + custom.json) with
+// what applyConfig needs to commit it.
+type builtConfig struct {
+	body       []byte
+	primaryTag string
+	st         settings.Settings
+	listCIDRs  []string
+	servers    int
+	warnings   []string
+}
+
+// buildConfig assembles the config from the stores and merges custom into
+// it. custom == nil means the stored custom.json. A broken custom.json is a
+// 400 (a *config.SyntaxError when it doesn't parse).
+func (h *handlers) buildConfig(custom []byte) (builtConfig, int, error) {
 	state, err := h.d.Servers.Snapshot()
 	if err != nil {
-		return serversApplyResp{}, http.StatusInternalServerError, err
+		return builtConfig{}, http.StatusInternalServerError, err
 	}
 	outs, primaryTag, warnings, err := buildOutbounds(state)
 	if err != nil {
-		return serversApplyResp{}, http.StatusBadRequest, err
+		return builtConfig{}, http.StatusBadRequest, err
 	}
 
 	st := settings.Defaults()
@@ -1287,18 +1379,111 @@ func (h *handlers) applyServers(ctx context.Context, restart bool) (serversApply
 		DNS:               st.DNS,
 	}, outs)
 	if err != nil {
-		return serversApplyResp{}, http.StatusInternalServerError, err
+		return builtConfig{}, http.StatusInternalServerError, err
 	}
 
-	resp := serversApplyResp{Servers: len(state.Servers), Warnings: warnings}
-	// Validate before writing.
-	if h.d.Checker != nil {
-		cr, cerr := h.d.Checker.CheckContent(ctx, body)
-		if cerr == nil {
-			resp.Check = cr
-			if !cr.OK {
-				return resp, http.StatusBadRequest, nil
+	if custom == nil && h.d.Custom != nil {
+		if custom, err = h.d.Custom.Read(); err != nil {
+			return builtConfig{}, http.StatusInternalServerError, fmt.Errorf("read custom.json: %w", err)
+		}
+	}
+	body, overrides, err := config.MergeCustom(body, custom)
+	if err != nil {
+		return builtConfig{}, http.StatusBadRequest, err
+	}
+	for _, o := range overrides {
+		warnings = append(warnings, "custom.json переопределяет "+o)
+	}
+	return builtConfig{
+		body:       body,
+		primaryTag: primaryTag,
+		st:         st,
+		listCIDRs:  listCIDRs,
+		servers:    len(state.Servers),
+		warnings:   warnings,
+	}, http.StatusOK, nil
+}
+
+// listenProbe tries to bind addr; a variable so tests don't touch real ports.
+var listenProbe = func(addr string) error {
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return l.Close()
+}
+
+// validateConfig runs everything that can be known before sing-box starts:
+// Lint (what `sing-box check` lets through), the listen ports and bound
+// interfaces on this router, then `sing-box check` itself. Problems that
+// would stop sing-box are errors; the rest are warnings.
+func (h *handlers) validateConfig(ctx context.Context, body []byte) (config.CheckResult, []string) {
+	errs := config.Lint(body)
+	var warnings []string
+
+	// Ports the running sing-box already holds are freed by the restart; any
+	// other port must be bindable now, or `sing-box run` fails on it.
+	var current []config.Listen
+	if cur, err := h.d.Config.Read(); err == nil {
+		current = config.InboundListens(cur)
+	}
+	for _, l := range config.InboundListens(body) {
+		held := false
+		for _, c := range current {
+			if c.Overlaps(l) {
+				held = true
+				break
 			}
+		}
+		if held {
+			continue
+		}
+		if err := listenProbe(net.JoinHostPort(l.Addr, strconv.Itoa(l.Port))); err != nil {
+			errs = append(errs, fmt.Sprintf("inbound %q: не удаётся занять %s:%d — %v", l.Tag, l.Addr, l.Port, err))
+		}
+	}
+	for _, name := range config.BindInterfaces(body) {
+		if _, err := net.InterfaceByName(name); err != nil {
+			warnings = append(warnings, fmt.Sprintf("интерфейс %q сейчас не найден на роутере — соединения через него не пойдут", name))
+		}
+	}
+
+	res := config.CheckResult{OK: len(errs) == 0, Errors: errs}
+	if h.d.Checker != nil && len(errs) == 0 {
+		if cr, err := h.d.Checker.CheckContent(ctx, body); err == nil {
+			res = cr
+		}
+	}
+	return res, warnings
+}
+
+// applyConfig builds, validates and commits the config. custom == nil uses
+// the stored custom.json; otherwise custom is the proposed content, saved
+// only once the resulting config has passed validation.
+func (h *handlers) applyConfig(ctx context.Context, restart bool, custom []byte) (serversApplyResp, int, error) {
+	b, status, err := h.buildConfig(custom)
+	if err != nil {
+		var se *config.SyntaxError
+		if errors.As(err, &se) || status == http.StatusBadRequest {
+			return serversApplyResp{
+				Check:  config.CheckResult{Errors: []string{err.Error()}},
+				Syntax: se,
+			}, http.StatusBadRequest, nil
+		}
+		return serversApplyResp{}, status, err
+	}
+	body, primaryTag, st, listCIDRs := b.body, b.primaryTag, b.st, b.listCIDRs
+
+	resp := serversApplyResp{Servers: b.servers, Warnings: b.warnings}
+	check, warnings := h.validateConfig(ctx, body)
+	resp.Check = check
+	resp.Warnings = append(resp.Warnings, warnings...)
+	if !check.OK {
+		return resp, http.StatusBadRequest, nil
+	}
+	if custom != nil {
+		if err := h.d.Custom.Write(custom); err != nil {
+			return resp, http.StatusInternalServerError, fmt.Errorf("save custom.json: %w", err)
 		}
 	}
 
@@ -1315,6 +1500,7 @@ func (h *handlers) applyServers(ctx context.Context, restart bool) (serversApply
 		if rerr != nil {
 			// Surface but don't fail the whole apply — config is already written.
 			resp.Check.Stderr = rerr.Error()
+			resp.RestartError = rerr.Error()
 		} else if primaryTag != "" {
 			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 			go func() { defer cancel(); h.reassertPrimary(ctx, primaryTag) }()
