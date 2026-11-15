@@ -26,19 +26,43 @@ type Fetched struct {
 	Title   string // profile-title header, if the provider sent one
 }
 
+// FetchOptions controls the client identity sent to a subscription provider.
+type FetchOptions struct {
+	UserAgent string
+	HWID      string // empty disables HWID headers
+}
+
+var (
+	errHWIDRequired = errors.New("провайдер требует корректный HWID — включите «Передавать HWID устройства» в настройках подписки или проверьте свой HWID")
+	errHWIDLimit    = errors.New("достигнут лимит устройств подписки — удалите ненужные устройства в панели провайдера или обратитесь к провайдеру")
+)
+
 // Fetch downloads url with client and parses the body.
-func Fetch(ctx context.Context, client *http.Client, url, userAgent string) (*Fetched, error) {
+func Fetch(ctx context.Context, client *http.Client, url string, opts FetchOptions) (*Fetched, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", opts.UserAgent)
 	req.Header.Set("Accept", "*/*")
+	if opts.HWID != "" {
+		req.Header.Set("x-hwid", opts.HWID)
+		req.Header.Set("x-device-os", "Linux")
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	flag := func(name string) bool {
+		return strings.EqualFold(strings.TrimSpace(resp.Header.Get(name)), "true")
+	}
+	if flag("x-hwid-max-devices-reached") || flag("x-hwid-limit") {
+		return nil, errHWIDLimit
+	}
+	if flag("x-hwid-not-supported") {
+		return nil, errHWIDRequired
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
