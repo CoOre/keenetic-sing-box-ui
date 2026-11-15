@@ -197,18 +197,26 @@ func TestRunner_HWIDHeadersAndProxy(t *testing.T) {
 }
 
 func TestRunner_HWIDDenials(t *testing.T) {
-	for header, want := range map[string]error{
-		"x-hwid-not-supported":       errHWIDRequired,
-		"x-hwid-max-devices-reached": errHWIDLimit,
-		"x-hwid-limit":               errHWIDLimit,
+	for name, tc := range map[string]struct {
+		headers []string
+		want    error
+	}{
+		"missing": {[]string{"x-hwid-not-supported"}, errHWIDRequired},
+		"limit":   {[]string{"x-hwid-max-devices-reached"}, errHWIDLimit},
+		"legacy":  {[]string{"x-hwid-limit"}, errHWIDLimit},
+		// Observed on Remnawave 3.4.11: the legacy flag accompanies both errors.
+		"missing-with-legacy": {[]string{"x-hwid-not-supported", "x-hwid-limit"}, errHWIDRequired},
+		"limit-with-legacy":   {[]string{"x-hwid-max-devices-reached", "x-hwid-limit"}, errHWIDLimit},
 	} {
 		for _, status := range []int{http.StatusOK, http.StatusNotFound} {
-			t.Run(fmt.Sprintf("%s/%d", header, status), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/%d", name, status), func(t *testing.T) {
 				deny, requests := false, 0
 				provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					requests++
 					if deny {
-						w.Header().Set(header, "true")
+						for _, header := range tc.headers {
+							w.Header().Set(header, "true")
+						}
 						w.WriteHeader(status)
 					}
 					// Even a parseable response must not override a HWID denial.
@@ -223,15 +231,15 @@ func TestRunner_HWIDDenials(t *testing.T) {
 					t.Fatal(err)
 				}
 				deny = true
-				if _, err := r.Refresh(context.Background(), sub.ID); !errors.Is(err, want) {
-					t.Fatalf("denial: %v, want %v", err, want)
+				if _, err := r.Refresh(context.Background(), sub.ID); !errors.Is(err, tc.want) {
+					t.Fatalf("denial: %v, want %v", err, tc.want)
 				}
 				if requests != 2 {
 					t.Fatalf("denial retried through proxy: %d requests", requests)
 				}
 				stored, _ := st.Get(sub.ID)
 				list, err := r.Servers.List()
-				if err != nil || len(list) != 1 || stored.LastError != want.Error() {
+				if err != nil || len(list) != 1 || stored.LastError != tc.want.Error() {
 					t.Fatalf("state after denial: %v %+v %v", list, stored, err)
 				}
 			})

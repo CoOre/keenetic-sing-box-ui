@@ -57,11 +57,13 @@ func Fetch(ctx context.Context, client *http.Client, url string, opts FetchOptio
 	flag := func(name string) bool {
 		return strings.EqualFold(strings.TrimSpace(resp.Header.Get(name)), "true")
 	}
-	if flag("x-hwid-max-devices-reached") || flag("x-hwid-limit") {
-		return nil, errHWIDLimit
-	}
+	// Remnawave also sends the legacy x-hwid-limit on a missing HWID.
+	// Prefer its explicit reason over that ambiguous compatibility flag.
 	if flag("x-hwid-not-supported") {
 		return nil, errHWIDRequired
+	}
+	if flag("x-hwid-max-devices-reached") || flag("x-hwid-limit") {
+		return nil, errHWIDLimit
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
