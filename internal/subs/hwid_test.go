@@ -18,12 +18,12 @@ import (
 )
 
 func TestValidateHWID(t *testing.T) {
-	for _, value := range []string{"", "abcDEF12=-", strings.Repeat("a", 64)} {
+	for _, value := range []string{"", "abcDEF12=-", "manual_hwid_1234", strings.Repeat("_", 64), strings.Repeat("a", 64)} {
 		if err := ValidateHWID(value); err != nil {
 			t.Errorf("valid %q: %v", value, err)
 		}
 	}
-	for _, value := range []string{"short", strings.Repeat("a", 65), "кириллица123", "abcdefghij_", "abcdefghij\r\n", " abcdefghij"} {
+	for _, value := range []string{"short", strings.Repeat("a", 65), "кириллица123", "abcdefghij.", "abcdefghij\r\n", " abcdefghij"} {
 		if ValidateHWID(value) == nil {
 			t.Errorf("accepted invalid HWID %q", value)
 		}
@@ -144,6 +144,7 @@ func TestRunner_HWIDHeadersAndProxy(t *testing.T) {
 		{"disabled", false, "manual-hwid-123"},
 		{"automatic", true, ""},
 		{"manual", true, "manual-hwid-123"},
+		{"manual-underscores", true, "manual_hwid_1234"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var identities []string

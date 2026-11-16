@@ -199,12 +199,14 @@ func (s *Store) Delete(id string) error {
 	return s.save(f)
 }
 
-var hwidRe = regexp.MustCompile(`^[a-zA-Z0-9=-]{10,64}$`)
+var hwidRe = regexp.MustCompile(`^[a-zA-Z0-9=_-]{10,64}$`)
 
-// ValidateHWID accepts an optional override in Remnawave's HWID format.
+// ValidateHWID accepts an optional override, including underscores used by
+// providers with a broader HWID format than stock Remnawave 3.x. The provider
+// decides whether to accept the ID; it must be sent without rewriting it.
 func ValidateHWID(hwid string) error {
 	if hwid != "" && !hwidRe.MatchString(hwid) {
-		return errors.New("HWID должен содержать от 10 до 64 символов: латинские буквы, цифры, = или -")
+		return errors.New("HWID должен содержать от 10 до 64 символов: латинские буквы, цифры, _, = или -")
 	}
 	return nil
 }

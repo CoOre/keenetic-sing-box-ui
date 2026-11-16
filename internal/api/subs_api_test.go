@@ -87,6 +87,39 @@ func TestAPI_Subscriptions(t *testing.T) {
 	}
 }
 
+// Issue #1: an existing 16-character provider HWID with underscores must
+// reach the provider unchanged on both the first add and later refreshes.
+func TestAPI_SubscriptionHWIDUnderscore(t *testing.T) {
+	e := newEnv(t)
+	const hwid = "manual_hwid_1234"
+	requests := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("x-hwid") != hwid {
+			t.Errorf("HWID changed: %q, want %q", r.Header.Get("x-hwid"), hwid)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Write([]byte(base64.StdEncoding.EncodeToString([]byte("trojan://pw@a.example.com:443#A"))))
+	}))
+	defer provider.Close()
+	resp := e.bearer("POST", "/api/subs", []byte(`{"url":"`+provider.URL+`","hwid_enabled":true,"hwid":"`+hwid+`"}`))
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("add: %d %s", resp.StatusCode, body)
+	}
+	var added subsRefreshResp
+	mustJSON(t, body, &added)
+	stored, err := e.deps.Subs.Get(added.Sub.ID)
+	if err != nil || stored.HWID != hwid || added.Sub.LastCount != 1 {
+		t.Fatalf("stored subscription: %+v, err=%v", stored, err)
+	}
+	resp = e.bearer("POST", "/api/subs/"+added.Sub.ID+"/refresh", nil)
+	if resp.StatusCode != http.StatusOK || requests != 2 {
+		t.Fatalf("refresh: %d %s, requests=%d", resp.StatusCode, readAll(t, resp), requests)
+	}
+}
+
 func TestAPI_SubscriptionHWID(t *testing.T) {
 	e := newEnv(t)
 	var identities []string
@@ -104,7 +137,7 @@ func TestAPI_SubscriptionHWID(t *testing.T) {
 		w.Write([]byte(base64.StdEncoding.EncodeToString([]byte("trojan://pw@a.example.com:443#A"))))
 	}))
 	defer provider.Close()
-	for _, invalid := range []string{"short", "invalid_hwid_value"} {
+	for _, invalid := range []string{"short", "invalid.hwid.value"} {
 		resp := e.bearer("POST", "/api/subs", []byte(`{"url":"`+provider.URL+`","hwid":"`+invalid+`"}`))
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("invalid HWID: %d %s", resp.StatusCode, readAll(t, resp))
