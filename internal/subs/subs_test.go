@@ -54,11 +54,16 @@ func wrap76(s string) string {
 
 func TestParseBody_Errors(t *testing.T) {
 	for name, tc := range map[string]struct{ body, want string }{
-		"empty":   {"  ", "пустой"},
-		"json":    {`{"outbounds":[]}`, "JSON"},
-		"clash":   {"port: 7890\nproxies:\n  - name: a", "Clash"},
-		"html":    {"<!DOCTYPE html><html>", "HTML"},
-		"only-ph": {linkInfo, "ни одна"},
+		"empty":           {"  ", "пустой"},
+		"json":            {`{"outbounds":[]}`, "JSON"},
+		"json-url":        {`{"outbounds":[],"url":"https://example.com"}`, "JSON"},
+		"base64-json-url": {base64.StdEncoding.EncodeToString([]byte(`{"url":"https://example.com"}`)), "JSON"},
+		"clash-url":       {"proxies:\n  - name: test\nurl: https://example.com", "Clash"},
+		"html-share-link": {"<!DOCTYPE html><html>\n" + linkTrojan + "\n</html>", "HTML"},
+		"html-url":        {`<!DOCTYPE html><html><a href="https://example.com">login</a></html>`, "HTML"},
+		"clash":           {"port: 7890\nproxies:\n  - name: a", "Clash"},
+		"html":            {"<!DOCTYPE html><html>", "HTML"},
+		"only-ph":         {linkInfo, "ни одна"},
 	} {
 		_, _, err := ParseBody([]byte(tc.body))
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

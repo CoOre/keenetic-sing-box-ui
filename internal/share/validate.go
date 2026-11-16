@@ -31,6 +31,16 @@ func (s *Server) Validate() error {
 	if s.ServerPort == 0 && (s.Type != TypeHysteria2 || len(s.ServerPorts) == 0) {
 		return errors.New("не указан порт")
 	}
+	// These protocols use transportBlock. Reject anything it cannot emit;
+	// otherwise e.g. an xhttp link silently becomes a plain TCP outbound.
+	switch s.Type {
+	case TypeVLESS, TypeVMess, TypeTrojan:
+		switch s.Network {
+		case "", "tcp", "ws", "grpc", "http":
+		default:
+			return fmt.Errorf("неподдерживаемый транспорт %q (поддерживаются tcp, ws, grpc, http)", s.Network)
+		}
+	}
 
 	switch s.Type {
 	case TypeVLESS, TypeVMess:
