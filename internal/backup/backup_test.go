@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/CoOre/keenetic-sing-box-ui/internal/subs"
 )
 
 func testManager(t *testing.T, root string) *Manager {
@@ -19,11 +21,45 @@ func testManager(t *testing.T, root string) *Manager {
 		ServersPath:       filepath.Join(ui, "servers.json"),
 		SettingsPath:      filepath.Join(ui, "singbox-settings.json"),
 		ListsPath:         filepath.Join(ui, "lists.json"),
+		SubsPath:          filepath.Join(ui, "subs.json"),
 		TLSCertPath:       filepath.Join(ui, "tls", "cert.pem"),
 		TLSKeyPath:        filepath.Join(ui, "tls", "key.pem"),
 		SingBoxConfigPath: filepath.Join(root, "opt/etc/sing-box/config.json"),
 		UIVersion:         "test",
 		Now:               func() time.Time { return time.Unix(1700000000, 0) },
+	}
+}
+
+func TestSubscriptionHWIDRoundtrip(t *testing.T) {
+	src := testManager(t, t.TempDir())
+	sourceStore := subs.NewStore(src.SubsPath)
+	want, err := sourceStore.DeviceHWID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := sourceStore.Add(subs.Subscription{URL: "https://example.com/sub", HWIDEnabled: true, HWID: "manual-hwid-123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := src.Export(&buf); err != nil {
+		t.Fatal(err)
+	}
+	dst := testManager(t, t.TempDir())
+	destinationStore := subs.NewStore(dst.SubsPath)
+	if _, err := destinationStore.DeviceHWID(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dst.Import(&buf); err != nil {
+		t.Fatal(err)
+	}
+	got, err := destinationStore.DeviceHWID()
+	if err != nil || got != want {
+		t.Fatalf("restored identity: %q %v, want %q", got, err, want)
+	}
+	restored, err := destinationStore.Get(sub.ID)
+	if err != nil || !restored.HWIDEnabled || restored.HWID != sub.HWID {
+		t.Fatalf("restored subscription: %+v %v", restored, err)
 	}
 }
 

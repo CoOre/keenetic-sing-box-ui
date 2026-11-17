@@ -26,25 +26,55 @@ type Fetched struct {
 	Title   string // profile-title header, if the provider sent one
 }
 
+// FetchOptions controls the client identity sent to a subscription provider.
+type FetchOptions struct {
+	UserAgent string
+	HWID      string // empty disables HWID headers
+}
+
+var (
+	errHWIDRequired  = errors.New("провайдер требует корректный HWID — включите «Передавать HWID устройства» в настройках подписки или проверьте свой HWID")
+	errHWIDLimit     = errors.New("достигнут лимит устройств подписки — удалите ненужные устройства в панели провайдера или обратитесь к провайдеру")
+	errExpectedLinks = errors.New("не удалось разобрать ответ: ожидается список share-ссылок (plain или base64)")
+)
+
 // Fetch downloads url with client and parses the body.
-func Fetch(ctx context.Context, client *http.Client, url, userAgent string) (*Fetched, error) {
+func Fetch(ctx context.Context, client *http.Client, url string, opts FetchOptions) (*Fetched, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", opts.UserAgent)
 	req.Header.Set("Accept", "*/*")
+	if opts.HWID != "" {
+		req.Header.Set("x-hwid", opts.HWID)
+		req.Header.Set("x-device-os", "Linux")
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	flag := func(name string) bool {
+		return strings.EqualFold(strings.TrimSpace(resp.Header.Get(name)), "true")
+	}
+	// Remnawave also sends the legacy x-hwid-limit on a missing HWID.
+	// Prefer its explicit reason over that ambiguous compatibility flag.
+	if flag("x-hwid-not-supported") {
+		return nil, errHWIDRequired
+	}
+	if flag("x-hwid-max-devices-reached") || flag("x-hwid-limit") {
+		return nil, errHWIDLimit
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(body) > maxBody {
+		return nil, &parseError{fmt.Errorf("ответ подписки превышает %d МиБ — список серверов не обновлён", maxBody>>20)}
 	}
 	servers, skipped, err := ParseBody(body)
 	if err != nil {
@@ -81,20 +111,36 @@ func ParseBody(body []byte) (servers []share.Server, skipped int, err error) {
 		}
 		text = string(dec)
 	}
+	// A URL inside JSON/HTML is not a share link. Diagnose the response
+	// format before scanning lines (which would hide the useful UA hint).
+	if ferr := unsupportedFormat(text); ferr != errExpectedLinks {
+		return nil, 0, ferr
+	}
+	var validationErr error
 	for line := range strings.SplitSeq(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") || !strings.Contains(line, "://") {
 			continue
 		}
 		s, perr := share.ParseLink(line)
-		if perr != nil || isPlaceholder(s) || s.Validate() != nil {
+		if perr != nil || isPlaceholder(s) {
 			skipped++
+			continue
+		}
+		if verr := s.Validate(); verr != nil {
+			skipped++
+			if validationErr == nil {
+				validationErr = verr
+			}
 			continue
 		}
 		servers = append(servers, *s)
 	}
 	if len(servers) == 0 {
 		if skipped > 0 {
+			if validationErr != nil {
+				return nil, skipped, fmt.Errorf("ни одна из %d ссылок не распознана: %w", skipped, validationErr)
+			}
 			return nil, skipped, fmt.Errorf("ни одна из %d ссылок не распознана (поддерживаются vless, trojan, ss, vmess, hysteria2, tuic, anytls)", skipped)
 		}
 		return nil, 0, unsupportedFormat(text)
@@ -106,12 +152,12 @@ func unsupportedFormat(text string) error {
 	switch {
 	case strings.HasPrefix(text, "{"), strings.HasPrefix(text, "["):
 		return errors.New("провайдер отдал JSON-конфиг вместо списка ссылок — укажите другой User-Agent (например, v2rayN) или ссылку на формат v2ray/base64")
-	case strings.Contains(text, "proxies:"):
+	case strings.HasPrefix(text, "proxies:"), strings.Contains(text, "\nproxies:"):
 		return errors.New("провайдер отдал Clash YAML вместо списка ссылок — укажите другой User-Agent (например, v2rayN) или ссылку на формат v2ray/base64")
 	case strings.HasPrefix(strings.ToLower(text), "<!doctype"), strings.HasPrefix(strings.ToLower(text), "<html"):
 		return errors.New("по ссылке HTML-страница, а не подписка")
 	}
-	return errors.New("не удалось разобрать ответ: ожидается список share-ссылок (plain или base64)")
+	return errExpectedLinks
 }
 
 // decodeBase64 accepts std/url alphabets, with or without padding, and

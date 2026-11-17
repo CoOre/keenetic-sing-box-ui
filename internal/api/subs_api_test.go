@@ -87,6 +87,133 @@ func TestAPI_Subscriptions(t *testing.T) {
 	}
 }
 
+// Issue #1: an existing 16-character provider HWID with underscores must
+// reach the provider unchanged on both the first add and later refreshes.
+func TestAPI_SubscriptionHWIDUnderscore(t *testing.T) {
+	e := newEnv(t)
+	const hwid = "manual_hwid_1234"
+	requests := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("x-hwid") != hwid {
+			t.Errorf("HWID changed: %q, want %q", r.Header.Get("x-hwid"), hwid)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Write([]byte(base64.StdEncoding.EncodeToString([]byte("trojan://pw@a.example.com:443#A"))))
+	}))
+	defer provider.Close()
+	resp := e.bearer("POST", "/api/subs", []byte(`{"url":"`+provider.URL+`","hwid_enabled":true,"hwid":"`+hwid+`"}`))
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("add: %d %s", resp.StatusCode, body)
+	}
+	var added subsRefreshResp
+	mustJSON(t, body, &added)
+	stored, err := e.deps.Subs.Get(added.Sub.ID)
+	if err != nil || stored.HWID != hwid || added.Sub.LastCount != 1 {
+		t.Fatalf("stored subscription: %+v, err=%v", stored, err)
+	}
+	resp = e.bearer("POST", "/api/subs/"+added.Sub.ID+"/refresh", nil)
+	if resp.StatusCode != http.StatusOK || requests != 2 {
+		t.Fatalf("refresh: %d %s, requests=%d", resp.StatusCode, readAll(t, resp), requests)
+	}
+}
+
+func TestAPI_SubscriptionHWID(t *testing.T) {
+	e := newEnv(t)
+	var identities []string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identities = append(identities, r.Header.Get("x-hwid"))
+		if len(identities) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if r.Header.Get("x-hwid") == "" {
+			w.Header().Set("x-hwid-not-supported", "true")
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Write([]byte(base64.StdEncoding.EncodeToString([]byte("trojan://pw@a.example.com:443#A"))))
+	}))
+	defer provider.Close()
+	for _, invalid := range []string{"short", "invalid.hwid.value"} {
+		resp := e.bearer("POST", "/api/subs", []byte(`{"url":"`+provider.URL+`","hwid":"`+invalid+`"}`))
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("invalid HWID: %d %s", resp.StatusCode, readAll(t, resp))
+		}
+	}
+	if len(identities) != 0 {
+		t.Fatal("invalid HWID reached provider")
+	}
+	body := []byte(`{"url":"` + provider.URL + `","hwid_enabled":true}`)
+	resp := e.bearer("POST", "/api/subs", body)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("first add: %d %s", resp.StatusCode, readAll(t, resp))
+	}
+	if list, _ := e.deps.Subs.List(); len(list) != 0 {
+		t.Fatal("failed first add left subscription behind")
+	}
+	resp = e.bearer("POST", "/api/subs", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("retry add: %d %s", resp.StatusCode, readAll(t, resp))
+	}
+	var added subsRefreshResp
+	mustJSON(t, readAll(t, resp), &added)
+	if !added.Sub.HWIDEnabled || added.Sub.HWID != "" || added.Sub.LastCount != 1 || len(identities) != 2 || identities[0] != identities[1] || identities[0] == "" {
+		t.Fatalf("automatic add: %+v, identities %v", added, identities)
+	}
+	automatic := identities[0]
+	url := "/api/subs/" + added.Sub.ID
+	update := func(fields string, status int) subs.Subscription {
+		t.Helper()
+		resp := e.bearer("PUT", url, []byte(`{"url":"`+provider.URL+`"`+fields+`}`))
+		body := readAll(t, resp)
+		if resp.StatusCode != status {
+			t.Fatalf("update: %d %s", resp.StatusCode, body)
+		}
+		var sub subs.Subscription
+		if status == http.StatusOK {
+			mustJSON(t, body, &sub)
+		}
+		return sub
+	}
+	updated := update(`,"hwid":"  manual-hwid-123  "`, http.StatusOK)
+	if updated.HWID != "manual-hwid-123" || !updated.HWIDEnabled {
+		t.Fatalf("manual update: %+v", updated)
+	}
+	updated = update(`,"name":"legacy client"`, http.StatusOK)
+	if updated.HWID != "manual-hwid-123" || !updated.HWIDEnabled {
+		t.Fatalf("old client lost HWID settings: %+v", updated)
+	}
+	resp = e.bearer("POST", url+"/refresh", nil)
+	if resp.StatusCode != http.StatusOK || identities[len(identities)-1] != "manual-hwid-123" {
+		t.Fatalf("manual refresh: %d %s, identities %v", resp.StatusCode, readAll(t, resp), identities)
+	}
+	update(`,"hwid":"bad"`, http.StatusBadRequest)
+	stored, _ := e.deps.Subs.Get(added.Sub.ID)
+	if stored.HWID != "manual-hwid-123" {
+		t.Fatal("invalid update changed stored HWID")
+	}
+	update(`,"hwid":""`, http.StatusOK)
+	resp = e.bearer("POST", url+"/refresh", nil)
+	if resp.StatusCode != http.StatusOK || identities[len(identities)-1] != automatic {
+		t.Fatalf("return to automatic: %d %s, identities %v", resp.StatusCode, readAll(t, resp), identities)
+	}
+	update(`,"hwid_enabled":false`, http.StatusOK)
+	resp = e.bearer("POST", url+"/refresh", nil)
+	if resp.StatusCode != http.StatusBadGateway || identities[len(identities)-1] != "" || !strings.Contains(string(readAll(t, resp)), "HWID") {
+		t.Fatal("disabled HWID did not produce provider's diagnostic")
+	}
+	var listed struct {
+		Subscriptions []subs.Subscription `json:"subscriptions"`
+	}
+	mustJSON(t, readAll(t, e.bearer("GET", "/api/subs", nil)), &listed)
+	if len(listed.Subscriptions) != 1 || listed.Subscriptions[0].HWIDEnabled || listed.Subscriptions[0].HWID != "" {
+		t.Fatalf("listed HWID settings: %+v", listed)
+	}
+}
+
 // subsEnvWithChains adds a subscription with servers A and B, a manual
 // server M, and chains via = [A, B] (primary) and old = [A, M] (broken by
 // deleting M). It returns the subscription ID and a setter for the provider's

@@ -341,6 +341,8 @@ export interface Subscription {
   enabled: boolean;
   auto_apply: boolean;
   user_agent?: string;
+  hwid_enabled?: boolean;
+  hwid?: string;
   last_fetch?: string;
   last_error?: string;
   last_count: number;
@@ -356,6 +358,8 @@ export interface SubInput {
   enabled?: boolean;
   auto_apply: boolean;
   user_agent?: string;
+  hwid_enabled?: boolean;
+  hwid?: string;
 }
 
 export interface SubRefreshResult {

@@ -3,6 +3,7 @@ package subs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -163,14 +164,28 @@ func (r *Runner) fetch(ctx context.Context, sub *Subscription) (*Fetched, string
 	if ua == "" {
 		ua = DefaultUserAgent
 	}
+	opts := FetchOptions{UserAgent: ua}
+	if sub.HWIDEnabled {
+		opts.HWID = strings.TrimSpace(sub.HWID)
+		if err := ValidateHWID(opts.HWID); err != nil {
+			return nil, "", err
+		}
+		if opts.HWID == "" {
+			var err error
+			opts.HWID, err = r.Store.DeviceHWID()
+			if err != nil {
+				return nil, "", fmt.Errorf("подготовка HWID: %w", err)
+			}
+		}
+	}
 	var f *Fetched
 	via, err := proxyretry.Do(ctx, fetchTimeout, &http.Client{}, r.ProxyClient, nil,
 		func(ctx context.Context, c *http.Client) error {
 			var err error
-			f, err = Fetch(ctx, c, sub.URL, ua)
+			f, err = Fetch(ctx, c, sub.URL, opts)
 			// A response we got but couldn't parse won't improve through the proxy.
 			var perr *parseError
-			if errors.As(err, &perr) {
+			if errors.As(err, &perr) || errors.Is(err, errHWIDRequired) || errors.Is(err, errHWIDLimit) {
 				return proxyretry.Permanent(err)
 			}
 			return err

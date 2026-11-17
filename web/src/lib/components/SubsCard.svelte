@@ -31,7 +31,7 @@
   let confirmDelete = $state<Subscription | null>(null);
 
   function blank(): SubInput {
-    return { name: "", url: "", interval: 720, enabled: true, auto_apply: true, user_agent: "" };
+    return { name: "", url: "", interval: 720, enabled: true, auto_apply: true, user_agent: "", hwid_enabled: false, hwid: "" };
   }
 
   async function load() {
@@ -49,8 +49,8 @@
       form = blank();
       uaOpen = false;
     } else {
-      form = { name: s.name, url: s.url, interval: s.interval || 720, enabled: s.enabled, auto_apply: s.auto_apply, user_agent: s.user_agent ?? "" };
-      uaOpen = !!s.user_agent;
+      form = { name: s.name, url: s.url, interval: s.interval || 720, enabled: s.enabled, auto_apply: s.auto_apply, user_agent: s.user_agent ?? "", hwid_enabled: s.hwid_enabled ?? false, hwid: s.hwid ?? "" };
+      uaOpen = !!s.user_agent || !!s.hwid_enabled || !!s.hwid;
     }
     editor = s;
   }
@@ -258,12 +258,23 @@
             <button class={"toggle" + (form.enabled ? " on" : "")} onclick={() => (form.enabled = !form.enabled)} role="switch" aria-checked={!!form.enabled} aria-label="Обновлять по расписанию"></button>
           </div>
         {/if}
-        <FormSection title="Дополнительно" hint={form.user_agent?.trim() ? `User-Agent: ${form.user_agent.trim()}` : ""} bind:open={uaOpen}>
+        <FormSection title="Дополнительно" hint={[form.user_agent?.trim() ? `User-Agent: ${form.user_agent.trim()}` : "", form.hwid_enabled ? "HWID включён" : ""].filter(Boolean).join(" · ")} bind:open={uaOpen}>
           <div class="field">
             <label for="sub-ua">User-Agent</label>
             <input id="sub-ua" class="input mono" bind:value={form.user_agent} placeholder="keenetic-sing-box-ui" />
             <span class="hint">Панели выбирают формат ответа по User-Agent. Если провайдер отдаёт JSON или Clash вместо ссылок, укажите <span class="mono">v2rayN/7.0</span>.</span>
           </div>
+          <div class="toggle-row">
+            <div class="toggle-text"><b>Передавать HWID устройства</b><span>Для подписок с ограничением числа устройств, например Remnawave</span></div>
+            <button class={"toggle" + (form.hwid_enabled ? " on" : "")} onclick={() => (form.hwid_enabled = !form.hwid_enabled)} role="switch" aria-checked={!!form.hwid_enabled} aria-label="Передавать HWID устройства"></button>
+          </div>
+          {#if form.hwid_enabled}
+            <div class="field">
+              <label for="sub-hwid">Свой HWID <span class="hint">необязательно</span></label>
+              <input id="sub-hwid" class="input mono" bind:value={form.hwid} placeholder="Автоматически" />
+              <span class="hint">Оставьте пустым для постоянного идентификатора этой установки UI. Он общий для подписок и переносится с резервной копией. Свой HWID: 10–64 символа, латинские буквы, цифры, _, = или -. Допустимый формат зависит от провайдера.</span>
+            </div>
+          {/if}
         </FormSection>
         {#if formError}<div class="callout err"><Icon name="alert" size={17} /><div class="callout-body">{formError}</div></div>{/if}
       </div>

@@ -1545,12 +1545,24 @@ func (h *handlers) subsList(w http.ResponseWriter, r *http.Request) {
 }
 
 type subsReq struct {
-	Name      string `json:"name"`
-	URL       string `json:"url"`
-	Interval  int    `json:"interval"`
-	Enabled   *bool  `json:"enabled"`
-	AutoApply bool   `json:"auto_apply"`
-	UserAgent string `json:"user_agent"`
+	Name        string  `json:"name"`
+	URL         string  `json:"url"`
+	Interval    int     `json:"interval"`
+	Enabled     *bool   `json:"enabled"`
+	AutoApply   bool    `json:"auto_apply"`
+	UserAgent   string  `json:"user_agent"`
+	HWIDEnabled *bool   `json:"hwid_enabled"`
+	HWID        *string `json:"hwid"`
+}
+
+func (req subsReq) applyHWID(sub *subs.Subscription) error {
+	if req.HWIDEnabled != nil {
+		sub.HWIDEnabled = *req.HWIDEnabled
+	}
+	if req.HWID != nil {
+		sub.HWID = strings.TrimSpace(*req.HWID)
+	}
+	return subs.ValidateHWID(sub.HWID)
 }
 
 type subsRefreshResp struct {
@@ -1571,14 +1583,19 @@ func (h *handlers) subsAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	sub, err := h.d.Subs.Add(subs.Subscription{
+	input := subs.Subscription{
 		Name:      strings.TrimSpace(req.Name),
 		URL:       strings.TrimSpace(req.URL),
 		Interval:  req.Interval,
 		Enabled:   true,
 		AutoApply: req.AutoApply,
 		UserAgent: strings.TrimSpace(req.UserAgent),
-	})
+	}
+	if err := req.applyHWID(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	sub, err := h.d.Subs.Add(input)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -1606,6 +1623,10 @@ func (h *handlers) subsUpdate(w http.ResponseWriter, r *http.Request) {
 	sub, err := h.d.Subs.Get(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err := req.applyHWID(sub); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	newURL := strings.TrimSpace(req.URL)
